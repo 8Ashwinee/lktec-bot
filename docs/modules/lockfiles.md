@@ -11,7 +11,8 @@ It replaces the shared `dependabot-lockfiles` workflow of `ci-workflows`, which 
 commit with a fine-grained personal access token (`AUTOMERGE_TOKEN`) and signed it with a
 per-repository SSH key (`DEPLOY_SIGNING_KEY`). Here the bot makes the commit through the GraphQL
 mutation `createCommitOnBranch`: **GitHub itself creates and signs it**, so it shows as verified
-with the App's bot as committer, and the only permission needed is `contents:write`.
+(author: the App's bot, committer: GitHub, as for a commit made in the web interface), and the
+only permission needed is `contents:write`.
 
 It ships as
 
@@ -80,6 +81,14 @@ It writes `result` (`ok`, `denied`, `error`), `decision` (`committed`, `unchange
   anyway, and the verb says why before it calls GitHub. A lock file module therefore cannot be
   turned into a way to change CI definitions.
 - The result is the commit id and its URL. Permission: `contents:write`.
+
+### Verified live
+
+Run once against this repository, through the real gate with the production adapters and the
+App key from an Actions secret, on the scratch branch `scratch/commit-verb-20261106` (deleted
+afterwards): the `commit` verb created commit `4b2aa11825bd2e07af29ed909c55569e62287ae6` with one
+added file; the API reported `verification.verified: true` (reason `valid`), author
+`lktec-bot[bot]`, committer `GitHub` (`web-flow`), the branch head as its only parent.
 
 ## Ecosystems
 
