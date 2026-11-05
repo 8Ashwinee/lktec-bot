@@ -9,7 +9,7 @@ on:
   schedule:
     - cron: "23 * * * *"
   push:
-    branches: [main, feat/automerge-module]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
