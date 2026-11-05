@@ -6,11 +6,12 @@ Exit codes: 0 the verb ran (or the policy allows it), 1 an error, 2 usage or con
 
 from __future__ import annotations
 
+import inspect
 import os
 from collections.abc import Mapping
 from contextlib import closing
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any, Literal
 
 import typer
 
@@ -21,12 +22,12 @@ from lktec_bot.adapters.github_http import HttpGitHubApi
 from lktec_bot.adapters.key_source import EnvKeySource
 from lktec_bot.application.gate import Gate, VerbRequest, VerbResult, parse_repository
 from lktec_bot.application.modules import authorize, validate_policy
-from lktec_bot.application.verbs import VerbSpec, handlers, load_verbs
-from lktec_bot.domain.permissions import Verb
+from lktec_bot.application.verbs import Option, VerbSpec, handlers, load_verbs
+from lktec_bot.domain.permissions import Target, Verb
 from lktec_bot.domain.policy import PolicyError
 from lktec_bot.ports.github_api import GitHubApi
 from lktec_bot.ports.token_provider import TokenProvider
-from lktec_bot.summary import mask_secret, write_summary
+from lktec_bot.summary import mask_secret, write_outputs, write_summary
 from lktec_bot.text import sanitize
 
 EXIT_OK = 0
@@ -38,6 +39,9 @@ PROVIDER_VAR = "LKTEC_BOT_TOKEN_PROVIDER"
 API_URL_VAR = "LKTEC_BOT_API_URL"
 CALLER_TOKEN_VAR = "LKTEC_BOT_CALLER_TOKEN"
 PROVIDERS = ("app",)
+
+# ``--target`` values of the verbs whose permission depends on what they act on.
+TARGETS: Mapping[str, Target] = {"pr": Target.PULL_REQUEST, "issue": Target.ISSUE}
 
 # No pretty exceptions: a rich traceback with locals would print the token or the key when
 # something unexpected goes wrong.
@@ -53,6 +57,10 @@ app.add_typer(policy_app, name="policy")
 
 class ConfigError(ValueError):
     """The environment does not describe a usable setup."""
+
+
+class UsageError(ValueError):
+    """The command line does not describe a runnable request."""
 
 
 def say(text: str, *, err: bool = False) -> None:
@@ -138,22 +146,105 @@ def build_gate(env: Mapping[str, str] | None = None) -> Gate:
     )
 
 
+# -- verb subcommands, built from the registry ---------------------------------------------
+
+
+def _parameter(name: str, annotation: object, default: object = inspect.Parameter.empty) -> Any:
+    return inspect.Parameter(
+        name, inspect.Parameter.KEYWORD_ONLY, annotation=annotation, default=default
+    )
+
+
+def _parameters_for(option: Option) -> list[Any]:
+    """The typer parameter(s) one declared option turns into."""
+    if option.kind == "text":
+        # A body: inline or from a file; exactly one of the two when required.
+        return [
+            _parameter(
+                option.name,
+                Annotated[str | None, typer.Option(option.flag, help=option.help)],
+                None,
+            ),
+            _parameter(
+                f"{option.name}_file",
+                Annotated[
+                    Path | None,
+                    typer.Option(f"{option.flag}-file", help=f"{option.help} Read from a file."),
+                ],
+                None,
+            ),
+        ]
+    python_type: Any
+    if option.kind == "int":
+        python_type = int
+    elif option.kind == "choice":
+        python_type = Literal[option.choices]
+    else:
+        python_type = str
+    if option.required:
+        return [
+            _parameter(
+                option.name, Annotated[python_type, typer.Option(option.flag, help=option.help)]
+            )
+        ]
+    return [
+        _parameter(
+            option.name,
+            Annotated[python_type | None, typer.Option(option.flag, help=option.help)],
+            None,
+        )
+    ]
+
+
+def collect_args(spec: VerbSpec, values: Mapping[str, object]) -> dict[str, object]:
+    """Turn parsed option values into ``VerbRequest.args``; bodies are read from their file."""
+    args: dict[str, object] = {}
+    for option in spec.options:
+        if option.kind == "text":
+            inline = values.get(option.name)
+            path = values.get(f"{option.name}_file")
+            if inline is not None and path is not None:
+                raise UsageError(f"give either {option.flag} or {option.flag}-file, not both")
+            if path is not None:
+                try:
+                    args[option.name] = Path(str(path)).read_text(encoding="utf-8")
+                except OSError as exc:
+                    raise UsageError(f"{option.flag}-file: cannot read {path}: {exc}") from None
+            elif inline is not None:
+                args[option.name] = inline
+            elif option.required:
+                raise UsageError(f"{option.flag} or {option.flag}-file is required")
+            continue
+        value = values.get(option.name)
+        if value is not None:
+            args[option.name] = value
+    return args
+
+
 def add_verb_command(spec: VerbSpec) -> None:
-    """Register ``lktec-bot <verb> --repository owner/name --module m`` for a verb."""
+    """Register ``lktec-bot <verb> --repository owner/name --module m [options]`` for a verb."""
     verb = spec.verb
 
-    def command(
-        repository: Annotated[
-            str, typer.Option("--repository", "-R", help="Target repository as owner/name.")
-        ],
-        module: Annotated[str, typer.Option("--module", "-m", help="Module asking for the verb.")],
-    ) -> None:
+    def command(**values: object) -> None:
         try:
-            owner, repo = parse_repository(repository)
+            owner, repo = parse_repository(str(values["repository"]))
         except ValueError as exc:
             say(f"--repository: {exc}", err=True)
             raise typer.Exit(code=EXIT_USAGE) from None
-        request = VerbRequest(owner=owner, repo=repo, module=module, verb=verb)
+        target = TARGETS[str(values["target"])] if spec.takes_target else None
+        try:
+            args = collect_args(spec, values)
+        except UsageError as exc:
+            say(str(exc), err=True)
+            raise typer.Exit(code=EXIT_USAGE) from None
+        request = VerbRequest(
+            owner=owner,
+            repo=repo,
+            module=str(values["module"]),
+            verb=verb,
+            target=target,
+            args=args,
+        )
         try:
             gate = build_gate()
         except ConfigError as exc:
@@ -163,6 +254,33 @@ def add_verb_command(spec: VerbSpec) -> None:
             result = gate.run(request)
         _report(request, result)
 
+    parameters = [
+        _parameter(
+            "repository",
+            Annotated[
+                str, typer.Option("--repository", "-R", help="Target repository as owner/name.")
+            ],
+        ),
+        _parameter(
+            "module",
+            Annotated[str, typer.Option("--module", "-m", help="Module asking for the verb.")],
+        ),
+    ]
+    if spec.takes_target:
+        parameters.append(
+            _parameter(
+                "target",
+                Annotated[
+                    Literal["pr", "issue"],
+                    typer.Option("--target", help="What the verb acts on: a PR or an issue."),
+                ],
+            )
+        )
+    for option in spec.options:
+        parameters.extend(_parameters_for(option))
+
+    command.__signature__ = inspect.Signature(parameters)  # type: ignore[attr-defined]
+    command.__annotations__ = {parameter.name: parameter.annotation for parameter in parameters}
     command.__name__ = verb.value.replace("-", "_")
     command.__doc__ = f"Run the {verb.value} verb through the gate."
     app.command(verb.value)(command)
@@ -170,7 +288,10 @@ def add_verb_command(spec: VerbSpec) -> None:
 
 def _report(request: VerbRequest, result: VerbResult) -> None:
     write_summary(result.to_markdown(request))
+    write_outputs({"result": result.outcome.value, "message": result.message, "url": result.url})
     say(f"{result.outcome.value}: {result.message}")
+    if result.url:
+        say(f"url: {result.url}")
     for warning in result.warnings:
         say(f"warning: {warning}", err=True)
     if result.ok:

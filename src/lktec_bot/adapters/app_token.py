@@ -43,10 +43,12 @@ class InstallationToken:
         repositories: frozenset[str] | None,
         expires_at: str,
         revoker: Callable[[str], None],
+        actor: str | None = None,
     ) -> None:
         self._value = value
         self._permissions = None if permissions is None else dict(permissions)
         self._repositories = repositories
+        self._actor = actor
         self.expires_at = expires_at
         self._revoker = revoker
         self.revoked = False
@@ -62,6 +64,10 @@ class InstallationToken:
     @property
     def repositories(self) -> frozenset[str] | None:
         return self._repositories
+
+    @property
+    def actor(self) -> str | None:
+        return self._actor
 
     def revoke(self) -> None:
         if self.revoked:
@@ -101,7 +107,7 @@ class AppTokenProvider:
 
     def token_for(self, owner: str, repo: str, permissions: Mapping[str, str]) -> InstallationToken:
         app_jwt = build_app_jwt(self._key_source.load(), self._now)
-        installation_id = self._installation_id(app_jwt, owner, repo)
+        installation_id, app_slug = self._installation(app_jwt, owner, repo)
         response = self._client.post(
             f"{self._base_url}/app/installations/{installation_id}/access_tokens",
             headers=github_headers(f"Bearer {app_jwt}"),
@@ -121,9 +127,11 @@ class AppTokenProvider:
             repositories=_repositories(payload.get("repositories")),
             expires_at=str(payload.get("expires_at", "")),
             revoker=self._revoke,
+            actor=f"{app_slug}[bot]" if app_slug else None,
         )
 
-    def _installation_id(self, app_jwt: str, owner: str, repo: str) -> int:
+    def _installation(self, app_jwt: str, owner: str, repo: str) -> tuple[int, str]:
+        """The installation id on ``owner/repo`` and the App's slug (empty when not reported)."""
         response = self._client.get(
             f"{self._base_url}/repos/{owner}/{repo}/installation",
             headers=github_headers(f"Bearer {app_jwt}"),
@@ -134,7 +142,9 @@ class AppTokenProvider:
             raise TokenError(
                 f"resolving the installation on {owner}/{repo} failed: {response.status_code}"
             )
-        return int(response.json()["id"])
+        payload = response.json()
+        slug = payload.get("app_slug")
+        return int(payload["id"]), slug if isinstance(slug, str) else ""
 
     def _revoke(self, token: str) -> None:
         response = self._client.delete(

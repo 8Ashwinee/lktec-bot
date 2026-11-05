@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from lktec_bot.summary import mask_secret, write_summary
+from lktec_bot.summary import mask_secret, write_outputs, write_summary
 
 
 def test_appends_to_the_step_summary_when_set(tmp_path: Path) -> None:
@@ -40,6 +40,27 @@ def test_summary_lines_never_start_with_a_workflow_command() -> None:
     write_summary("ok\n::set-env name=A::b\n\n::warning::x", env={}, out=out)
 
     assert out.getvalue() == "ok\n: :set-env name=A::b\n\n: :warning::x\n"
+
+
+def test_outputs_are_appended_one_per_line(tmp_path: Path) -> None:
+    output = tmp_path / "output.txt"
+    output.write_text("earlier=1\n", encoding="utf-8")
+
+    write_outputs(
+        {"result": "ok", "message": "line one\nresult=evil\n::cmd", "url": None},
+        env={"GITHUB_OUTPUT": str(output)},
+    )
+
+    assert output.read_text(encoding="utf-8") == (
+        "earlier=1\nresult=ok\nmessage=line one result=evil : :cmd\nurl=\n"
+    )
+
+
+def test_outputs_are_not_written_outside_actions(tmp_path: Path) -> None:
+    write_outputs({"result": "ok"}, env={})
+    write_outputs({"result": "ok"}, env={"GITHUB_OUTPUT": ""})
+
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_mask_secret_emits_the_command_only_in_actions() -> None:

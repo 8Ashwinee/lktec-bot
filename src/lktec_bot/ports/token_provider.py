@@ -33,6 +33,14 @@ class Token(Protocol):
         """The repository names the token is scoped to, or ``None`` when unknown."""
         ...
 
+    @property
+    def actor(self) -> str | None:
+        """The login the token acts as (``<app-slug>[bot]`` for an App), or ``None`` when the
+        provider does not know it. Verbs that look for their own earlier work (``comment`` with
+        a marker) need it; they fail closed without it.
+        """
+        ...
+
     def revoke(self) -> None: ...
 
 

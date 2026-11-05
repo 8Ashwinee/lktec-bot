@@ -1,0 +1,8 @@
+# Policy for lktec-bot itself: the end-to-end check (ping) and the automerge module, which
+# the e2e workflow uses for the bot's own status comment on pull requests.
+version: 1
+modules:
+  automerge:
+    enabled: true
+  ping:
+    enabled: true

@@ -31,6 +31,13 @@ dev = [
     "mypy>=1.17",
     "types-PyYAML>=6.0",
 ]
+# The build backend, locked like everything else so that the composite actions can install
+# the package with ``pip install --no-build-isolation`` from ``requirements.txt`` (exported
+# from uv.lock with hashes) instead of fetching an unpinned hatchling at run time.
+build = [
+    "hatchling>=1.27",
+    "hatch-vcs>=0.5",
+]
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]

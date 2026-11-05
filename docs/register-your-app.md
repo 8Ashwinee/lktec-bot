@@ -84,6 +84,17 @@ The repository's `.github/lktec-bot.yml` needs `ping: {enabled: true}` under `mo
 this. The job summary then shows `OK ping on you/your-repo (ping): pong from you/your-repo`,
 or the reason it was denied (exit code 3).
 
+Without a checkout of this repository, use the composite actions instead (pinned by commit
+SHA; see [`actions/README.md`](../actions/README.md)):
+
+```yaml
+      - uses: lukislp/lktec-bot/actions/setup@<sha> # vX.Y.Z
+      - uses: lukislp/lktec-bot/actions/ping@<sha> # vX.Y.Z
+        with:
+          app-id: ${{ vars.LKTEC_BOT_APP_ID }}
+          private-key: ${{ secrets.LKTEC_BOT_PRIVATE_KEY }}
+```
+
 ## 5. What happens on every run
 
 1. The core signs a short-lived JWT (RS256, 9 minutes, `iss` = App ID) with the private key.

@@ -96,6 +96,26 @@ def test_policy_is_read_from_the_default_branch_never_from_a_head() -> None:
     ]
 
 
+def test_handler_sees_the_actor_of_the_verb_token() -> None:
+    seen: list[str | None] = []
+
+    def who(api: GitHubApi, req: VerbRequest) -> VerbResult:
+        seen.append(req.actor)
+        return VerbResult(VerbOutcome.OK, "")
+
+    gate, _, _ = make_gate(ENABLED, handlers_map={Verb.PING: who})
+    assert gate.run(request()).ok
+    assert seen == ["fake-app[bot]"]
+
+    # A provider that does not know the actor hands over None; the request itself has none.
+    gate, _, _ = make_gate(
+        ENABLED, handlers_map={Verb.PING: who}, tokens=FakeTokenProvider(actor=None)
+    )
+    assert gate.run(request()).ok
+    assert seen == ["fake-app[bot]", None]
+    assert request().actor is None
+
+
 def test_close_closes_the_token_provider() -> None:
     gate, tokens, _ = make_gate(ENABLED)
 
