@@ -7,35 +7,62 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from lktec_bot.ports.github_api import MergeMethod, ReviewEvent
+from lktec_bot.ports.token_provider import TokenError
 
 
 @dataclass
 class FakeToken:
     value: str
-    permissions: Mapping[str, str]
+    permissions: Mapping[str, str] | None
+    repositories: frozenset[str] | None
     revoked: bool = False
     revoke_calls: int = 0
+    failing_revokes: int = 0  # how many revoke calls raise before one succeeds
 
     def revoke(self) -> None:
         self.revoke_calls += 1
+        if self.revoke_calls <= self.failing_revokes:
+            raise TokenError(f"revoking the token failed: attempt {self.revoke_calls}")
         self.revoked = True
 
 
 @dataclass
 class FakeTokenProvider:
-    """Mints a distinct token per call and keeps them all for inspection."""
+    """Mints a distinct token per call and keeps them all for inspection.
+
+    By default a token reports exactly the requested permissions plus ``metadata:read`` and
+    the one target repository, as GitHub does. ``permissions_by_mint`` and
+    ``repositories_by_mint`` override what the n-th minted token reports (``None`` means the
+    provider reports nothing); ``failing_revokes`` makes the first n revoke calls of every
+    token raise.
+    """
 
     minted: list[FakeToken] = field(default_factory=list)
     requests: list[tuple[str, str, dict[str, str]]] = field(default_factory=list)
     fail_with: Exception | None = None
+    permissions_by_mint: dict[int, Mapping[str, str] | None] = field(default_factory=dict)
+    repositories_by_mint: dict[int, frozenset[str] | None] = field(default_factory=dict)
+    failing_revokes: int = 0
+    closed: bool = False
 
     def token_for(self, owner: str, repo: str, permissions: Mapping[str, str]) -> FakeToken:
         self.requests.append((owner, repo, dict(permissions)))
         if self.fail_with is not None:
             raise self.fail_with
-        token = FakeToken(value=f"tok-{len(self.minted)}", permissions=dict(permissions))
+        index = len(self.minted)
+        granted = self.permissions_by_mint.get(index, {"metadata": "read", **permissions})
+        repositories = self.repositories_by_mint.get(index, frozenset({repo}))
+        token = FakeToken(
+            value=f"tok-{index}",
+            permissions=None if granted is None else dict(granted),
+            repositories=repositories,
+            failing_revokes=self.failing_revokes,
+        )
         self.minted.append(token)
         return token
+
+    def close(self) -> None:
+        self.closed = True
 
 
 @dataclass
@@ -45,6 +72,7 @@ class FakeGitHubApi:
     token: str
     files: Mapping[str, str]
     calls: list[tuple[str, tuple[Any, ...]]] = field(default_factory=list)
+    closed: bool = False
 
     def get_file_content(
         self, owner: str, repo: str, path: str, ref: str | None = None
@@ -58,9 +86,11 @@ class FakeGitHubApi:
         self.calls.append(("create_review", (owner, repo, number, event, body)))
         return f"https://github.com/{owner}/{repo}/pull/{number}#pullrequestreview-1"
 
-    def enable_auto_merge(self, pull_request_id: str, merge_method: MergeMethod) -> str:
-        self.calls.append(("enable_auto_merge", (pull_request_id, merge_method)))
-        return "https://github.com/o/r/pull/1"
+    def enable_auto_merge(
+        self, owner: str, repo: str, number: int, merge_method: MergeMethod
+    ) -> str:
+        self.calls.append(("enable_auto_merge", (owner, repo, number, merge_method)))
+        return f"https://github.com/{owner}/{repo}/pull/{number}"
 
     def update_branch(self, owner: str, repo: str, number: int, expected_head_sha: str) -> str:
         self.calls.append(("update_branch", (owner, repo, number, expected_head_sha)))
@@ -73,6 +103,9 @@ class FakeGitHubApi:
     def graphql(self, query: str, variables: Mapping[str, Any] | None = None) -> dict[str, Any]:
         self.calls.append(("graphql", (query, dict(variables or {}))))
         return {}
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class FakeApiFactory:

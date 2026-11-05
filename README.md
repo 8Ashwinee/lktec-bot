@@ -36,7 +36,7 @@ uv run lktec-bot policy validate .github/lktec-bot.yml
 uv run lktec-bot policy check --file .github/lktec-bot.yml --module automerge --verb approve
 ```
 
-A policy file that enables the `automerge` module:
+A policy file that enables the `automerge` module and the end-to-end `ping` check:
 
 ```yaml
 version: 1
@@ -45,23 +45,32 @@ modules:
     enabled: true
     exclude: []
     majors: manual
+  ping:
+    enabled: true
 ```
+
+Each module may only run the verbs registered for it (`automerge`: approve, enable-automerge,
+update-branch, comment; `ping`: ping), and only the options it declares; anything else makes
+the file invalid and denies every verb.
 
 To run a verb against a real repository, register an App ([docs/register-your-app.md](docs/register-your-app.md)),
 install it on the repository, export `LKTEC_BOT_APP_ID` and `LKTEC_BOT_PRIVATE_KEY`, then:
 
 ```sh
-uv run lktec-bot ping --repository owner/name --module automerge
+uv run lktec-bot ping --repository owner/name --module ping
 ```
 
-`ping` changes nothing; it proves the whole path (policy, narrowed token, revoke) and writes
-the result to the job summary when run in GitHub Actions.
+`ping` changes nothing; it proves the whole path (policy, narrowed token, token scope check,
+revoke) and writes the result to the job summary when run in GitHub Actions. Exit codes: 0 ran,
+1 error, 2 usage, 3 denied by policy. `LKTEC_BOT_API_URL` points the bot at a GitHub Enterprise
+Server; `LKTEC_BOT_TOKEN_PROVIDER` selects the token provider (`app`, the default and only one
+so far).
 
 ## Documentation
 
-- [docs/architecture.md](docs/architecture.md): layers, the gate flow, the verb/permission
-  table, how a verb is added, how a module calls a verb, why there is no merge verb and why
-  `workflows` is never requested.
+- [docs/architecture.md](docs/architecture.md): layers, the gate's decision order, the module
+  registry, the verb/permission table, how a verb is added (one file), exit codes, provider
+  selection, why there is no merge verb and why `workflows` is never requested.
 - [docs/register-your-app.md](docs/register-your-app.md): registering your own App, where to
   store the key, environment variables, rotation.
 - [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).

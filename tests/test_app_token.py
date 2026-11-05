@@ -7,7 +7,8 @@ import jwt
 import pytest
 import respx
 
-from lktec_bot.adapters.app_token import AppTokenProvider, TokenError
+from lktec_bot.adapters.app_token import AppTokenProvider
+from lktec_bot.ports.token_provider import TokenError
 from tests.conftest import StaticKeySource
 
 BASE = "https://api.github.test"
@@ -29,7 +30,7 @@ def test_mints_a_token_narrowed_to_repo_and_permissions(
             "token": "ghs_narrow",
             "expires_at": "2024-01-01T00:00:00Z",
             "permissions": {"pull_requests": "write", "metadata": "read"},
-            "repositories": [{"name": "widgets"}],
+            "repositories": [{"name": "widgets", "full_name": "acme/widgets"}],
         },
     )
     revoke = respx_mock.delete("/installation/token").respond(204)
@@ -39,7 +40,9 @@ def test_mints_a_token_narrowed_to_repo_and_permissions(
     assert token.value == "ghs_narrow"
     assert token.expires_at == "2024-01-01T00:00:00Z"
     assert token.permissions == {"pull_requests": "write", "metadata": "read"}
+    assert token.repositories == frozenset({"widgets"})
     assert "ghs_narrow" not in repr(token)
+    assert "widgets" in repr(token)
 
     body = json.loads(mint.calls[0].request.content)
     assert body == {"repositories": ["widgets"], "permissions": {"pull_requests": "write"}}
@@ -56,6 +59,7 @@ def test_mints_a_token_narrowed_to_repo_and_permissions(
         )
         assert claims["iss"] == "12345"
         assert route.calls[0].request.headers["user-agent"].startswith("lktec-bot/")
+        assert route.calls[0].request.headers["x-github-api-version"] == "2022-11-28"
 
     token.revoke()
     token.revoke()  # idempotent
@@ -63,6 +67,46 @@ def test_mints_a_token_narrowed_to_repo_and_permissions(
     assert revoke.call_count == 1
     assert revoke.calls[0].request.headers["authorization"] == "token ghs_narrow"
     assert token.revoked
+
+
+@respx.mock(base_url=BASE)
+def test_scope_the_api_does_not_report_is_unknown_not_assumed(
+    provider: AppTokenProvider, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.get("/repos/acme/widgets/installation").respond(200, json={"id": 1})
+    respx_mock.post("/app/installations/1/access_tokens").respond(201, json={"token": "t"})
+
+    token = provider.token_for("acme", "widgets", {"metadata": "read"})
+
+    assert token.permissions is None
+    assert token.repositories is None
+
+
+@respx.mock(base_url=BASE)
+def test_odd_scope_shapes_are_unknown_or_ignored(
+    provider: AppTokenProvider, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.get("/repos/acme/widgets/installation").respond(200, json={"id": 1})
+    respx_mock.post("/app/installations/1/access_tokens").respond(
+        201,
+        json={"token": "t", "permissions": ["not", "a", "dict"], "repositories": [{"x": 1}, 3]},
+    )
+
+    token = provider.token_for("acme", "widgets", {"metadata": "read"})
+
+    assert token.permissions is None
+    assert token.repositories == frozenset()
+
+
+@respx.mock(base_url=BASE)
+def test_response_without_a_token_is_a_token_error(
+    provider: AppTokenProvider, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.get("/repos/acme/widgets/installation").respond(200, json={"id": 1})
+    respx_mock.post("/app/installations/1/access_tokens").respond(201, json={"expires_at": "x"})
+
+    with pytest.raises(TokenError, match="returned no token"):
+        provider.token_for("acme", "widgets", {"metadata": "read"})
 
 
 @respx.mock(base_url=BASE)
@@ -127,7 +171,12 @@ def test_revoke_failure_is_a_token_error(
     assert not token.revoked
 
 
-def test_default_client_is_created_when_none_is_given(key_source: StaticKeySource) -> None:
+def test_default_client_is_created_when_none_is_given_and_closed(
+    key_source: StaticKeySource,
+) -> None:
     provider = AppTokenProvider(key_source)
 
     assert isinstance(provider._client, httpx.Client)
+    assert provider.base_url == "https://api.github.com"
+    provider.close()
+    assert provider._client.is_closed

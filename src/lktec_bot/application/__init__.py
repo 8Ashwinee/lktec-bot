@@ -1,4 +1,4 @@
-"""Application layer: the gate every verb goes through, and the verbs themselves."""
+"""Application layer: the gate every verb goes through, the module registry and the verbs."""
 
 from lktec_bot.application.gate import (
     Gate,
@@ -6,6 +6,19 @@ from lktec_bot.application.gate import (
     VerbOutcome,
     VerbRequest,
     VerbResult,
+    parse_repository,
 )
+from lktec_bot.application.modules import MODULES, ModuleSpec, authorize, validate_policy
 
-__all__ = ["Gate", "VerbHandler", "VerbOutcome", "VerbRequest", "VerbResult"]
+__all__ = [
+    "MODULES",
+    "Gate",
+    "ModuleSpec",
+    "VerbHandler",
+    "VerbOutcome",
+    "VerbRequest",
+    "VerbResult",
+    "authorize",
+    "parse_repository",
+    "validate_policy",
+]

@@ -2,7 +2,7 @@
 
 from lktec_bot.ports.github_api import GitHubApi, GitHubApiFactory
 from lktec_bot.ports.key_source import AppCredentials, KeySource
-from lktec_bot.ports.token_provider import Token, TokenProvider
+from lktec_bot.ports.token_provider import Token, TokenError, TokenProvider
 
 __all__ = [
     "AppCredentials",
@@ -10,5 +10,6 @@ __all__ = [
     "GitHubApiFactory",
     "KeySource",
     "Token",
+    "TokenError",
     "TokenProvider",
 ]

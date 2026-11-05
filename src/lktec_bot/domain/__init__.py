@@ -3,7 +3,6 @@
 from lktec_bot.domain.permissions import Grant, Permission, Target, Verb, permissions_for
 from lktec_bot.domain.policy import (
     POLICY_PATH,
-    AutomergeConfig,
     Decision,
     ModuleConfig,
     Policy,
@@ -14,7 +13,6 @@ from lktec_bot.domain.policy import (
 
 __all__ = [
     "POLICY_PATH",
-    "AutomergeConfig",
     "Decision",
     "Grant",
     "ModuleConfig",

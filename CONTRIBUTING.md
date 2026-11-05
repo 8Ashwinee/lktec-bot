@@ -20,8 +20,8 @@ repository is hard-coded here, everything comes from configuration or arguments)
 - **Conventional Commits.** Commit and pull-request titles follow Conventional Commits
   (`feat:`, `fix:`, `docs:`, `ci:`, and so on); they drive semantic versioning once releases
   are switched on. Squash-merge keeps the PR title as the commit message.
-- **Green checks.** `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy src`
-  and `uv run pytest` must pass; CI runs exactly these. Coverage of the domain and application
+- **Green checks.** `uv run ruff check .`, `uv run ruff format --check .`,
+  `uv run mypy src tests` and `uv run pytest` must pass; CI runs exactly these. Coverage of the domain and application
   layers stays high (the `fail_under` in `pyproject.toml` is the floor, not the target).
 - **Architecture.** Read [`docs/architecture.md`](docs/architecture.md) first. Domain code does
   no I/O, adapters implement ports, every verb goes through the gate, and a verb never asks for
@@ -38,7 +38,7 @@ repository is hard-coded here, everything comes from configuration or arguments)
 ```sh
 uv sync
 uv run ruff check . && uv run ruff format --check .
-uv run mypy src
+uv run mypy src tests
 uv run pytest
 ```
 

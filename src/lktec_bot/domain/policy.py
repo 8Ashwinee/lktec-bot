@@ -1,8 +1,10 @@
 """The per-repository policy file ``.github/lktec-bot.yml`` and the decisions made from it.
 
 A repository opts in to the bot by committing this file. Everything is denied unless the file
-exists, parses, and enables the module a verb belongs to. Unknown keys are errors rather than
-silently ignored, so a typo in ``enabled`` can never open a door by accident.
+exists, parses, and enables the module a verb belongs to. The domain understands the shape of
+the file (``version``, ``modules``, ``enabled``) and nothing about individual modules: every
+other key of a module entry is kept as an option for the module registry in the application
+layer to validate. Unknown top-level keys are errors rather than silently ignored.
 """
 
 from __future__ import annotations
@@ -11,8 +13,7 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
-from pydantic_core import InitErrorDetails
+from pydantic import BaseModel, ConfigDict, StrictBool, ValidationError, field_validator
 
 from lktec_bot.domain.permissions import Verb
 
@@ -20,25 +21,20 @@ POLICY_PATH = ".github/lktec-bot.yml"
 
 
 class ModuleConfig(BaseModel):
-    """Base shape of every module entry: nothing but ``enabled`` until a module adds options."""
+    """One module entry. ``enabled`` is the only key the domain interprets.
 
-    model_config = ConfigDict(extra="forbid")
+    ``enabled`` is a strict boolean: ``yes``, ``1`` or ``"true"`` are errors, not truthy. Every
+    other key is kept in :attr:`options` and validated later against the module's own options
+    model; a module without such a model accepts no options at all.
+    """
 
-    enabled: bool = False
+    model_config = ConfigDict(extra="allow")
 
+    enabled: StrictBool = False
 
-class AutomergeConfig(ModuleConfig):
-    """Options of the ``automerge`` module."""
-
-    exclude: list[str] = []
-    majors: Literal["manual", "auto"] = "manual"
-
-
-# Module name -> the model that validates its options. A new module registers itself here;
-# a module that is not registered may only carry ``enabled`` (``ModuleConfig`` forbids more).
-MODULE_MODELS: dict[str, type[ModuleConfig]] = {
-    "automerge": AutomergeConfig,
-}
+    @property
+    def options(self) -> dict[str, Any]:
+        return dict(self.model_extra or {})
 
 
 class Policy(BaseModel):
@@ -53,32 +49,20 @@ class Policy(BaseModel):
 
     @field_validator("modules", mode="before")
     @classmethod
-    def _typed_modules(cls, raw: object) -> object:
-        """Validate each module with its registered model, keeping the module name in errors."""
-        if not isinstance(raw, dict):
-            return raw
-        typed: dict[str, Any] = {}
-        line_errors: list[InitErrorDetails] = []
-        for name, options in raw.items():
-            model = MODULE_MODELS.get(str(name), ModuleConfig)
-            try:
-                typed[str(name)] = model.model_validate(options if options is not None else {})
-            except ValidationError as exc:
-                for error in exc.errors(include_url=False):
-                    detail: InitErrorDetails = {
-                        "type": error["type"],
-                        "loc": (str(name), *error["loc"]),
-                        "input": error["input"],
-                    }
-                    if "ctx" in error:
-                        detail["ctx"] = error["ctx"]
-                    line_errors.append(detail)
-        if line_errors:
-            raise ValidationError.from_exception_data("modules", line_errors)
-        return typed
+    def _empty_entries(cls, raw: object) -> object:
+        """``modules:`` and ``automerge:`` without a value mean an empty mapping, not ``null``."""
+        if raw is None:
+            return {}
+        if isinstance(raw, dict):
+            return {name: {} if options is None else options for name, options in raw.items()}
+        return raw
 
     def allows(self, module: str, verb: Verb | str) -> Decision:
-        """Decide whether ``verb`` may run on behalf of ``module`` under this policy."""
+        """Decide whether ``module`` is declared and enabled; the verb is carried for the reason.
+
+        Which verbs a module may run is not a property of the file but of the module registry;
+        :func:`lktec_bot.application.modules.authorize` adds that check on top of this one.
+        """
         verb_name = _verb_name(verb)
         if verb_name is None:
             return Decision(False, module, str(verb), f"unknown verb {verb!s}")
@@ -117,7 +101,11 @@ class PolicyError(ValueError):
 
 
 def load_policy(text: str) -> Policy:
-    """Parse and validate policy YAML. Raises :class:`PolicyError` with readable reasons."""
+    """Parse and validate the shape of policy YAML. Raises :class:`PolicyError` with reasons.
+
+    Module options are carried through unvalidated; see
+    :func:`lktec_bot.application.modules.validate_policy` for the full check.
+    """
     try:
         raw = yaml.safe_load(text)
     except yaml.YAMLError as exc:
@@ -129,7 +117,7 @@ def load_policy(text: str) -> Policy:
     try:
         return Policy.model_validate(raw)
     except ValidationError as exc:
-        raise PolicyError(_format_errors(exc)) from exc
+        raise PolicyError(format_validation_errors(exc)) from exc
 
 
 def decide(policy: Policy | None, module: str, verb: Verb | str) -> Decision:
@@ -139,16 +127,17 @@ def decide(policy: Policy | None, module: str, verb: Verb | str) -> Decision:
     return policy.allows(module, verb)
 
 
+def format_validation_errors(exc: ValidationError, prefix: tuple[str, ...] = ()) -> list[str]:
+    """Render pydantic errors as ``location: message`` lines, optionally under a prefix."""
+    reasons: list[str] = []
+    for error in exc.errors():
+        location = ".".join(str(part) for part in (*prefix, *error["loc"])) or "<root>"
+        reasons.append(f"{location}: {error['msg']}")
+    return reasons
+
+
 def _verb_name(verb: Verb | str) -> str | None:
     try:
         return Verb(verb).value
     except ValueError:
         return None
-
-
-def _format_errors(exc: ValidationError) -> list[str]:
-    reasons: list[str] = []
-    for error in exc.errors():
-        location = ".".join(str(part) for part in error["loc"]) or "<root>"
-        reasons.append(f"{location}: {error['msg']}")
-    return reasons

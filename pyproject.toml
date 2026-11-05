@@ -74,9 +74,14 @@ extend-immutable-calls = ["typer.Argument", "typer.Option"]
 
 [tool.mypy]
 python_version = "3.13"
-files = ["src"]
+files = ["src", "tests"]
 strict = true
 warn_unreachable = true
+
+# Tests are checked too, with one relaxation: pytest and respx decorators are untyped.
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_decorators = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

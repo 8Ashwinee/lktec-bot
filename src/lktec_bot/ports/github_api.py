@@ -1,4 +1,5 @@
-"""The minimal GitHub surface the verbs need. Every method is one API call."""
+"""The minimal GitHub surface the verbs need. Every method is one API call (or two, where a
+node id has to be resolved first)."""
 
 from __future__ import annotations
 
@@ -15,7 +16,10 @@ class GitHubApi(Protocol):
     def get_file_content(
         self, owner: str, repo: str, path: str, ref: str | None = None
     ) -> str | None:
-        """Return the decoded text of a file, or ``None`` when it does not exist."""
+        """Return the decoded text of a file, or ``None`` when it does not exist.
+
+        Without ``ref`` the file is read from the repository's default branch.
+        """
         ...
 
     def create_review(
@@ -24,8 +28,13 @@ class GitHubApi(Protocol):
         """Submit a pull request review and return its HTML URL."""
         ...
 
-    def enable_auto_merge(self, pull_request_id: str, merge_method: MergeMethod) -> str:
-        """Enable auto-merge on a pull request (GraphQL node id) and return the PR URL."""
+    def enable_auto_merge(
+        self, owner: str, repo: str, number: int, merge_method: MergeMethod
+    ) -> str:
+        """Enable auto-merge on pull request ``number`` and return the PR URL.
+
+        The adapter resolves the pull request's GraphQL node id itself.
+        """
         ...
 
     def update_branch(self, owner: str, repo: str, number: int, expected_head_sha: str) -> str:
@@ -40,6 +49,10 @@ class GitHubApi(Protocol):
         """Run a GraphQL query and return its ``data`` object."""
         ...
 
+    def close(self) -> None:
+        """Release the client's connections. Idempotent."""
+        ...
 
-# Builds a client for a freshly minted token; the gate calls it once per token.
+
+# Builds a client for a freshly minted token; the gate calls it once per token and closes it.
 GitHubApiFactory = Callable[[str], GitHubApi]
