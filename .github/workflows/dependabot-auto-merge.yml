@@ -14,10 +14,11 @@ on:
 
 permissions:
   contents: read
+  actions: read # the reusable workflow reads which commit of itself the run uses
 
 jobs:
   automerge:
-    uses: lukislp/lktec-bot/.github/workflows/automerge.yml@ccaf0d6082b03b09aa936233743bd3fef0dd337c # 2026-11-05
+    uses: lukislp/lktec-bot/.github/workflows/automerge.yml@f509bab74ea73762dc5aa62d53a8d0ca44bf138e # 2026-11-05
     secrets:
       app-id: ${{ secrets.LKTEC_BOT_APP_ID }}
       private-key: ${{ secrets.LKTEC_BOT_PRIVATE_KEY }}
