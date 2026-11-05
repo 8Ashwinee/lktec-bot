@@ -2,7 +2,8 @@
 
 The commit is made with the GraphQL mutation ``createCommitOnBranch``, so GitHub itself creates
 and signs it: it shows as verified, the author is the App's bot and the committer is GitHub
-(``web-flow``), with no signing key and no personal access token. The only permission is ``contents:write``.
+(``web-flow``), with no signing key and no personal access token. The only permission is
+``contents:write``.
 
 Safety rules, all checked before anything is sent:
 
