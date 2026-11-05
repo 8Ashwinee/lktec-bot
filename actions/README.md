@@ -33,11 +33,20 @@ Exit codes of the underlying CLI: 0 ran, 1 error, 2 usage, 3 denied.
 
 ## `setup`
 
-Installs the package from the action's own checkout with `pip install --no-deps`, every
-dependency and the build backend pinned by hash in `requirements.txt` (exported from `uv.lock`
-with `uv export --frozen --no-dev --group build --no-emit-project --hashes`; CI checks that
-the file matches the lock). Needs network access to `pypi.org` and `files.pythonhosted.org`
-only. Input `python-version` (default `3.13`).
+Installs the package from the action's own checkout with `uv`. Every dependency and the build
+backend are installed with their hashes from an export of `uv.lock` made at run time
+(`uv export --frozen --no-dev --group build --no-emit-project --hashes`, then
+`uv pip install --require-hashes --no-deps`), so the lock file is the only source of truth and
+no generated `requirements.txt` is committed: a Dependabot bump of `uv.lock` is complete on
+its own. uv itself is installed by `astral-sh/setup-uv` (SHA-pinned, Astral mirror off).
+
+Inputs: `python-version` (default `3.13`) and `uv-version` (default: the version this
+repository tests with, an exact version).
+
+A runner hardened with `step-security/harden-runner` in block mode needs these endpoints for the
+setup step: `github.com`, `api.github.com`, `objects.githubusercontent.com`,
+`release-assets.githubusercontent.com`, `raw.githubusercontent.com` (setup-uv reads its version
+manifest there), `pypi.org` and `files.pythonhosted.org`.
 
 ```yaml
 - uses: lukislp/lktec-bot/actions/setup@<sha> # vX.Y.Z
