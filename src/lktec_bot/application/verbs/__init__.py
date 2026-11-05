@@ -36,7 +36,8 @@ from lktec_bot.domain.permissions import Grant, Target, Verb, permissions_for
 GrantSpec = frozenset[Grant] | Mapping[Target, frozenset[Grant]]
 
 # ``text`` is a body: the CLI offers both ``--<name>`` (inline) and ``--<name>-file`` (a path).
-OptionKind = Literal["int", "str", "choice", "text"]
+# ``multi`` is a string flag that may be repeated; its value is a list of strings.
+OptionKind = Literal["int", "str", "choice", "text", "multi"]
 
 _OPTION_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 

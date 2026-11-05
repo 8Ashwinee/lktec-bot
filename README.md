@@ -51,7 +51,7 @@ modules:
 ```
 
 Each module may only run the verbs registered for it (`automerge`: approve, enable-automerge,
-update-branch, comment; `ping`: ping), and only the options it declares; anything else makes
+update-branch, comment; `lockfiles`: commit, comment; `ping`: ping), and only the options it declares; anything else makes
 the file invalid and denies every verb.
 
 To run a verb against a real repository, register an App ([docs/register-your-app.md](docs/register-your-app.md)),
@@ -76,13 +76,16 @@ so far).
   store the key, environment variables, rotation.
 - [docs/modules/automerge.md](docs/modules/automerge.md): the automerge module, its options, the
   differences to the personal-access-token workflow and how to set up a repository.
+- [docs/modules/lockfiles.md](docs/modules/lockfiles.md): the lockfiles module and the `commit`
+  verb: signed bot commits that replace a personal access token and a signing key.
 - [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ## Verbs and actions
 
 The phase-1 verbs ship: `ping`, `comment` (with an optional marker to update the bot's own
-earlier comment instead of adding one), `approve`, `enable-automerge` and `update-branch`.
-Each is a CLI subcommand and a composite action under [`actions/`](actions/README.md):
+earlier comment instead of adding one), `approve`, `enable-automerge` and `update-branch`, and
+`commit` (a commit on an existing branch that GitHub signs; CLI only so far). Each phase-1 verb
+is a CLI subcommand and a composite action under [`actions/`](actions/README.md):
 
 ```yaml
 - uses: lukislp/lktec-bot/actions/setup@<sha> # vX.Y.Z
@@ -109,6 +112,13 @@ to recreate conflicting pull requests. It ships as a reusable workflow
 ([`.github/workflows/automerge.yml`](.github/workflows/automerge.yml)) with a caller template
 ([`templates/dependabot-auto-merge.yml`](templates/dependabot-auto-merge.yml)). The bot never
 merges: GitHub does, once the required checks are green.
+
+The [`lockfiles` module](docs/modules/lockfiles.md) regenerates the lock files of a Dependabot
+pull request in a job without secrets and commits them with the `commit` verb in a second job.
+The commit is created through GraphQL `createCommitOnBranch`, so GitHub signs it: no personal
+access token and no signing key. Reusable workflow
+([`.github/workflows/lockfiles.yml`](.github/workflows/lockfiles.yml)) and caller template
+([`templates/dependabot-lockfiles.yml`](templates/dependabot-lockfiles.yml)).
 
 ## Status: phase 1, pre-release
 

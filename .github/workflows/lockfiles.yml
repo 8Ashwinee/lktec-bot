@@ -1,0 +1,343 @@
+name: Lockfiles (reusable)
+
+# Regenerates the lock files of a Dependabot pull request and commits them onto the pull request
+# branch as the GitHub App, in two jobs so that the code of the pull request never runs next to
+# a secret (see docs/modules/lockfiles.md). The caller keeps the triggers (see
+# templates/dependabot-lockfiles.yml); everything below runs with the CALLER's event context.
+#
+# Dependabot regenerates the lock file of the project whose manifest it bumped, but not the lock
+# files of the projects that depend on it (NuGet records a reference's dependencies in the
+# referencing project's packages.lock.json), and its uv lock output has shipped unparsable files.
+# Locked-mode restores then fail on the pull request.
+#
+# regenerate: checks out the pull request head and runs the ecosystem commands. It holds NO secret
+#             (the App id and key are referenced by the other job only). It uploads the lock
+#             files that changed, and nothing else, as an artifact.
+# commit:     holds the secrets, never checks out the pull request. It downloads the artifact,
+#             treats it as untrusted (known lock file names only), compares every file with the
+#             pull request head and commits the ones that differ with the commit verb: a GraphQL
+#             createCommitOnBranch commit, signed by GitHub, with contents:write only.
+on:
+  workflow_call:
+    inputs:
+      dotnet-version:
+        description: .NET SDK version for regenerating packages.lock.json files (empty = repo has no NuGet locks).
+        type: string
+        default: ""
+      uv-version:
+        description: uv version for regenerating uv.lock (empty = repo has no uv.lock). Must match the CI pin.
+        type: string
+        default: ""
+      python-version:
+        description: >-
+          Python version uv resolves against. Taken from the runner's tool cache via
+          actions/setup-python, so prefer a version the GitHub-hosted image already ships
+          (3.10-3.14 on ubuntu-22.04/24.04) - anything else makes setup-python fetch it.
+        type: string
+        default: "3.12"
+    secrets:
+      app-id:
+        description: The GitHub App id (a secret named LKTEC_BOT_APP_ID in the caller).
+        required: true
+      private-key:
+        description: The App's private key in PEM form (a secret named LKTEC_BOT_PRIVATE_KEY).
+        required: true
+
+permissions:
+  contents: read
+  actions: read # to read which commit of this workflow the run uses
+
+jobs:
+  regenerate:
+    # The PR AUTHOR, not github.actor: on a synchronize event the actor is whoever pushed last,
+    # which is the bot itself after its own commit. The author never changes. A branch in a fork
+    # is never touched.
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]'
+      && github.event.pull_request.draft == false
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # No secret is referenced anywhere in this job, and its token can read the repository only.
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.collect.outputs.changed }}
+    env:
+      # uv must never download an interpreter from python-build-standalone: that is an
+      # external fetch on every single run. The runner's tool cache already ships the version
+      # below, resolved locally by actions/setup-python - and with downloads off a missing
+      # interpreter fails loudly instead of being pulled in over the network.
+      UV_PYTHON_DOWNLOADS: never
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: block
+          # uv talks to PyPI, dotnet to NuGet and the .NET download hosts; the artifact upload
+          # to the results receiver and blob storage; the rest is GitHub itself.
+          allowed-endpoints: >
+            *.blob.core.windows.net:443
+            aka.ms:443
+            api.github.com:443
+            api.nuget.org:443
+            builds.dotnet.microsoft.com:443
+            files.pythonhosted.org:443
+            github.com:443
+            objects.githubusercontent.com:443
+            pypi.org:443
+            raw.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            results-receiver.actions.githubusercontent.com:443
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The head COMMIT the event describes, so a push that lands later cannot change what
+          # is regenerated; the commit job refuses a pull request that has moved on.
+          ref: ${{ github.event.pull_request.head.sha }}
+          # Full history so the base branch's uv.lock is available locally.
+          fetch-depth: 0
+          persist-credentials: false
+      - if: inputs.dotnet-version != '' && hashFiles('**/packages.lock.json') != ''
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: ${{ inputs.dotnet-version }}
+      - if: inputs.dotnet-version != '' && hashFiles('**/packages.lock.json') != ''
+        name: Regenerate every packages.lock.json
+        run: |
+          set -eu
+          for lock in $(git ls-files '**/packages.lock.json' 'packages.lock.json'); do
+            proj="$(ls "$(dirname "$lock")"/*.csproj | head -1)"
+            echo "restoring $proj"
+            dotnet restore "$proj" --force-evaluate -p:RestoreLockedMode=false
+          done
+      - if: inputs.uv-version != '' && hashFiles('uv.lock') != ''
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ inputs.uv-version }}
+          enable-cache: false
+          download-from-astral-mirror: false
+      - if: inputs.uv-version != '' && hashFiles('uv.lock') != ''
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ inputs.python-version }}
+      - if: inputs.uv-version != '' && hashFiles('uv.lock') != ''
+        name: Regenerate uv.lock
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          # Dependabot's own uv.lock output has been unparsable, and `uv lock` refuses to start
+          # from a broken file - so resolve from the base branch's lock plus the PR's pyproject.
+          #
+          # Restoring the base lock alone silently undoes the update, though. A bump that only
+          # moves a package inside uv.lock - a transitive dependency, or a direct one whose
+          # pyproject range already allows the new version - changes nothing in pyproject.toml,
+          # and `uv lock` then keeps every version the base lock records. Between 2026-09-12 and
+          # 2026-09-30 every such Dependabot PR in studylife-mcp, studylife-ai and github-dashboard
+          # merged as an empty squash, Dependabot re-opened the same bump the next day, and a
+          # CRITICAL PyJWT CVE stayed in the studylife-mcp image while its "fix" PR was green and
+          # merged. So first record which packages Dependabot moved, then ask uv for exactly those
+          # versions. A line scan on purpose, not a TOML parse: Dependabot's file may be the very
+          # broken one this step works around. The project's own package is skipped (hatch-vcs
+          # versions differ per commit, see below); packages Dependabot added or removed are left
+          # to the resolver.
+          #
+          # Packages Dependabot moved DOWN are left to the resolver too. A bump never asks for a
+          # downgrade; it happens because Dependabot's own resolution ignores
+          # [tool.uv] override-dependencies. On 2026-10-30 studylife-ai's langchain-litellm bump
+          # pulled litellm 1.106, which caps filelock <4, and Dependabot moved filelock from 4.2.1
+          # back to 3.32.7 (a high-severity GHSA) despite an override to >=4.2.1. Pinning that
+          # version made `uv lock` unsatisfiable and kept the PR red for good.
+          git show "origin/$BASE_REF:uv.lock" > "$RUNNER_TEMP/base-uv.lock"
+          UPGRADES="$(python - uv.lock "$RUNNER_TEMP/base-uv.lock" <<'PY'
+          import re, sys, tomllib
+
+          def norm(name):
+              return re.sub(r"[-_.]+", "-", name).lower()
+
+          def versions(path):
+              found, name = {}, None
+              for line in open(path, encoding="utf-8", errors="replace"):
+                  line = line.rstrip("\r\n")
+                  if line == "[[package]]":
+                      name = None
+                      continue
+                  m = re.fullmatch(r'name = "([^"]+)"', line)
+                  if m:
+                      name = norm(m.group(1))
+                      continue
+                  m = re.fullmatch(r'version = "([^"]+)"', line)
+                  if m and name:
+                      found[name] = m.group(1)
+                      name = None
+              return found
+
+          def release(version):
+              # Leading numeric release segment only ("4.2.1rc1" -> (4, 2, 1)); None if absent.
+              m = re.match(r"v?(\d+(?:\.\d+)*)", version)
+              return tuple(int(p) for p in m.group(1).split(".")) if m else None
+
+          def downgrade(new, old):
+              a, b = release(new), release(old)
+              if a is None or b is None:
+                  return False
+              width = max(len(a), len(b))
+              return a + (0,) * (width - len(a)) < b + (0,) * (width - len(b))
+
+          dependabot, base = versions(sys.argv[1]), versions(sys.argv[2])
+          try:
+              own = norm(tomllib.load(open("pyproject.toml", "rb"))["project"]["name"])
+          except Exception:
+              own = None
+          moved = {n: v for n, v in sorted(dependabot.items())
+                   if n != own and n in base and base[n] != v}
+          for n, v in moved.items():
+              if downgrade(v, base[n]):
+                  print(f"Dependabot moved {n} down ({base[n]} -> {v}) - left to the resolver",
+                        file=sys.stderr)
+          print(" ".join(f"--upgrade-package {n}=={v}" for n, v in moved.items()
+                         if not downgrade(v, base[n])))
+          PY
+          )"
+          if [ -n "$UPGRADES" ]; then
+            echo "Dependabot moved: $UPGRADES"
+          else
+            echo "Dependabot moved no locked package version (manifest-only change) - resolving from pyproject.toml"
+          fi
+          cp "$RUNNER_TEMP/base-uv.lock" uv.lock
+
+          # Pin the project's OWN version to whatever the base branch recorded, before locking.
+          #
+          # Repos using hatch-vcs derive it from `git describe`, so it carries the commit count
+          # and the HEAD sha: "1.14.18.dev136+g7640d79f2.d20260917". uv writes that into uv.lock,
+          # and a commit moves HEAD - so the next run produced a different version, saw a genuine
+          # diff, committed again and triggered itself. On 2026-09-17 that ran away in
+          # studylife-mcp: three Dependabot PRs at ~100 self-made commits each, a refresh every
+          # 20 seconds, stopping only when the PRs merged.
+          #
+          # Reading the value back out of the base lock rather than inventing one keeps the diff
+          # limited to real dependency changes. Empty for repos that do not record their own
+          # package, where the variable is simply never set and nothing changes for them.
+          BASE_VERSION="$(python -c 'import tomllib; n = tomllib.load(open("pyproject.toml", "rb")).get("project", {}).get("name"); l = tomllib.load(open("uv.lock", "rb")); print(next((p.get("version", "") for p in l.get("package", []) if p.get("name") == n), "") if n else "")' 2>/dev/null || true)"
+          if [ -n "$BASE_VERSION" ]; then
+            echo "pinning the project version to $BASE_VERSION while locking"
+            # Deliberately the un-suffixed name: hatch-vcs calls setuptools-scm's get_version()
+            # without a dist_name, so the SETUPTOOLS_SCM_PRETEND_VERSION_FOR_<DIST> form is
+            # never read. Same finding as the Dockerfiles that build these projects.
+            export SETUPTOOLS_SCM_PRETEND_VERSION="$BASE_VERSION"
+          fi
+
+          # Word splitting is the point here: one --upgrade-package flag per moved package.
+          # shellcheck disable=SC2086
+          uv lock $UPGRADES
+      - id: collect
+        name: Collect the changed lock files
+        run: |
+          set -eu
+          handover="$RUNNER_TEMP/handover"
+          mkdir -p "$handover/files"
+          : > "$handover/manifest.txt"
+          changed=false
+          # Only tracked files that changed (the lock files); untracked build output stays out,
+          # and so does every file that is not a known lock file name.
+          while IFS= read -r -d '' path; do
+            case "${path##*/}" in
+              uv.lock | packages.lock.json) ;;
+              *) continue ;;
+            esac
+            if ! printf '%s' "$path" | grep -Eq '^[A-Za-z0-9._/@+ -]+$'; then
+              echo "::warning::not handing over $path: the path has characters the bot does not accept"
+              continue
+            fi
+            mkdir -p "$handover/files/$(dirname "$path")"
+            cp "$path" "$handover/files/$path"
+            printf '%s\n' "$path" >> "$handover/manifest.txt"
+            echo "changed: $path"
+            changed=true
+          done < <(git diff --name-only -z)
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+          if [ "$changed" != true ]; then
+            echo "lock files already consistent"
+          fi
+      - if: steps.collect.outputs.changed == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lockfiles-handover
+          path: ${{ runner.temp }}/handover
+          # A lock file may live below a dot directory.
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  commit:
+    needs: regenerate
+    if: needs.regenerate.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    # One commit at a time per pull request; a second run waits for the first.
+    concurrency:
+      group: lockfiles-commit-${{ github.repository }}-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: block
+          # uv talks to PyPI only; the bot to api.github.com; setup-uv reads its version manifest
+          # from raw.githubusercontent.com and downloads uv from the GitHub release; the
+          # artifact download comes from the results receiver and blob storage.
+          allowed-endpoints: >
+            *.blob.core.windows.net:443
+            api.github.com:443
+            files.pythonhosted.org:443
+            github.com:443
+            objects.githubusercontent.com:443
+            pypi.org:443
+            raw.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            results-receiver.actions.githubusercontent.com:443
+      # The bot, at the commit this workflow file was called at. NOT the pull request: this job
+      # runs on pull_request_target with secrets and must never see the pull request's code.
+      # A reusable workflow cannot read its own repository or commit from the github context,
+      # but the run lists the workflows it references with their commit.
+      - name: Find the commit this workflow was called at
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          entry="$(gh api "repos/$RUN" --jq '[.referenced_workflows[]? | select(.path | test("/[.]github/workflows/lockfiles[.]yml@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"')"
+          read -r repository sha <<< "$entry"
+          if [[ ! "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ || ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::could not tell which commit of the lockfiles workflow this run uses: $entry"
+            exit 1
+          fi
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.source.outputs.repository }}
+          ref: ${{ steps.source.outputs.sha }}
+          path: .lktec-bot
+          persist-credentials: false
+      - uses: ./.lktec-bot/actions/setup
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: lockfiles-handover
+          path: ${{ runner.temp }}/handover
+      - name: Commit the regenerated lock files
+        env:
+          LKTEC_BOT_APP_ID: ${{ secrets.app-id }}
+          LKTEC_BOT_PRIVATE_KEY: ${{ secrets.private-key }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HANDOVER: ${{ runner.temp }}/handover
+        run: |
+          lktec-bot lockfiles commit \
+            --repository "$REPOSITORY" \
+            --number "$NUMBER" \
+            --head-sha "$HEAD_SHA" \
+            --changed-dir "$HANDOVER"

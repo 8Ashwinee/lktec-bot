@@ -29,6 +29,10 @@ class PullRequest:
     # ``UNSTABLE``, ``UNKNOWN``, ...). Only the single-pull-request call reports it; GitHub
     # computes it lazily, so ``UNKNOWN`` means "ask again in a moment". Empty when not reported.
     merge_state: str = ""
+    # The head branch name and the repository it lives in (``owner/name``; empty when the head
+    # repository is gone). A fork head is a different repository than the pull request's own.
+    head_ref: str = ""
+    head_repo: str = ""
 
     @property
     def open(self) -> bool:
@@ -54,6 +58,14 @@ class IssueComment:
     user_type: str  # "User" or "Bot"
     body: str
     html_url: str
+
+
+@dataclass(frozen=True, slots=True)
+class CreatedCommit:
+    """The commit ``create_commit_on_branch`` made."""
+
+    oid: str
+    url: str
 
 
 class BranchUpdate(StrEnum):
@@ -113,6 +125,29 @@ class GitHubApi(Protocol):
 
         ``ACCEPTED`` when GitHub queued the merge commit, ``UP_TO_DATE`` when the branch already
         contains the base; anything else is an error.
+        """
+        ...
+
+    def get_branch_head(self, owner: str, repo: str, branch: str) -> str | None:
+        """The commit id the branch points at, or ``None`` when the branch does not exist."""
+        ...
+
+    def create_commit_on_branch(
+        self,
+        owner: str,
+        repo: str,
+        branch: str,
+        headline: str,
+        body: str,
+        expected_head_oid: str,
+        additions: Mapping[str, bytes],
+        deletions: Sequence[str],
+    ) -> CreatedCommit:
+        """Commit the changes onto ``branch`` through GraphQL ``createCommitOnBranch``.
+
+        GitHub creates and signs the commit; it fails when the branch no longer points at
+        ``expected_head_oid`` instead of overwriting a concurrent push. ``additions`` maps a
+        repository path to the file's new content (the adapter encodes it).
         """
         ...
 

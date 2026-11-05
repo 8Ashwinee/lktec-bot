@@ -1,11 +1,16 @@
 # Policy for lktec-bot itself: the end-to-end check (ping) and the automerge module, which
 # arms the routine Dependabot pull requests of this repository (.github/workflows/
-# dependabot-auto-merge.yml) and which the e2e workflow uses for the bot's own status comment.
+# dependabot-auto-merge.yml) and which the e2e workflow uses for the bot's own status comment,
+# and the lockfiles module, which commits regenerated lock files onto Dependabot pull requests
+# (.github/workflows/dependabot-lockfiles.yml).
 version: 1
 modules:
   automerge:
     enabled: true
     majors: manual
     workflow-files: auto
+  lockfiles:
+    enabled: true
+    ecosystems: [uv]
   ping:
     enabled: true
