@@ -39,8 +39,10 @@ jobs:
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
           egress-policy: block
-          # pip talks to PyPI only; the bot to api.github.com; setup-python resolves 3.13 from
-          # the tool cache but reads its version manifest from GitHub when it has to.
+          # uv talks to PyPI only; the bot to api.github.com; setup-uv reads its version manifest
+          # from raw.githubusercontent.com and downloads uv from the GitHub release;
+          # setup-python resolves 3.13 from the tool cache but reads its manifest from GitHub
+          # when it has to.
           allowed-endpoints: >
             api.github.com:443
             files.pythonhosted.org:443
@@ -48,6 +50,7 @@ jobs:
             objects.githubusercontent.com:443
             pypi.org:443
             raw.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false

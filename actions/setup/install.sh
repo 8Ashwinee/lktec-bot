@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
 # Install lktec-bot from the repository that holds this action.
 #
-# Every dependency, the build backend included, comes from requirements.txt with hashes, so
-# nothing unpinned is fetched at run time: pip verifies the hashes, and the package itself is
+# Every dependency, the build backend included, is installed with its hash from an export of
+# uv.lock made right here, so nothing unpinned is fetched at run time and no generated
+# requirements file has to be committed: uv verifies the hashes, and the package itself is
 # built without isolation from the already installed backend.
 set -euo pipefail
 
 root="$(cd "$ACTION_PATH/../.." && pwd)"
-pip_install=(python -m pip install --quiet --disable-pip-version-check --no-deps)
+requirements="$(mktemp)"
+trap 'rm -f "$requirements"' EXIT
+python="$(command -v python)"
 
-"${pip_install[@]}" --require-hashes -r "$root/requirements.txt"
+uv export --quiet --frozen --no-dev --group build --no-emit-project --hashes \
+  --project "$root" -o "$requirements"
+uv pip install --quiet --python "$python" --require-hashes --no-deps -r "$requirements"
 
 if [ ! -d "$root/.git" ]; then
   # Used as an action from another repository: GitHub downloads the action without git
@@ -25,5 +30,5 @@ if [ ! -d "$root/.git" ]; then
   export SETUPTOOLS_SCM_PRETEND_VERSION="$version"
 fi
 
-"${pip_install[@]}" --no-build-isolation "$root"
+uv pip install --quiet --python "$python" --no-build-isolation --no-deps "$root"
 echo "installed lktec-bot $(lktec-bot version)"
