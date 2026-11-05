@@ -1,28 +1,63 @@
-"""Command line entry point. Verbs become subcommands with one ``add_verb_command`` line."""
+"""Command line entry point. Verb subcommands are built from the verb registry.
+
+Exit codes: 0 the verb ran (or the policy allows it), 1 an error, 2 usage or configuration,
+3 denied by policy.
+"""
 
 from __future__ import annotations
 
+import os
+from collections.abc import Mapping
+from contextlib import closing
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
 from lktec_bot import __version__
+from lktec_bot.adapters._http_common import DEFAULT_BASE_URL
 from lktec_bot.adapters.app_token import AppTokenProvider
 from lktec_bot.adapters.github_http import HttpGitHubApi
 from lktec_bot.adapters.key_source import EnvKeySource
-from lktec_bot.application.gate import Gate, VerbRequest, VerbResult
-from lktec_bot.application.verbs import HANDLERS
-from lktec_bot.domain.permissions import Target, Verb
-from lktec_bot.domain.policy import PolicyError, decide, load_policy
-from lktec_bot.summary import write_summary
+from lktec_bot.application.gate import Gate, VerbRequest, VerbResult, parse_repository
+from lktec_bot.application.modules import authorize, validate_policy
+from lktec_bot.application.verbs import VerbSpec, handlers, load_verbs
+from lktec_bot.domain.permissions import Verb
+from lktec_bot.domain.policy import PolicyError
+from lktec_bot.ports.github_api import GitHubApi
+from lktec_bot.ports.token_provider import TokenProvider
+from lktec_bot.summary import mask_secret, write_summary
+from lktec_bot.text import sanitize
 
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_USAGE = 2
+EXIT_DENIED = 3
+
+PROVIDER_VAR = "LKTEC_BOT_TOKEN_PROVIDER"
+API_URL_VAR = "LKTEC_BOT_API_URL"
+CALLER_TOKEN_VAR = "LKTEC_BOT_CALLER_TOKEN"
+PROVIDERS = ("app",)
+
+# No pretty exceptions: a rich traceback with locals would print the token or the key when
+# something unexpected goes wrong.
 app = typer.Typer(
     help="GitHub App bot core: least-privilege verbs, opt-in per repository.",
     no_args_is_help=True,
+    pretty_exceptions_enable=False,
+    pretty_exceptions_show_locals=False,
 )
 policy_app = typer.Typer(help="Validate and query a .github/lktec-bot.yml policy file.")
 app.add_typer(policy_app, name="policy")
+
+
+class ConfigError(ValueError):
+    """The environment does not describe a usable setup."""
+
+
+def say(text: str, *, err: bool = False) -> None:
+    """Print one sanitised line: no line breaks, no workflow command."""
+    typer.echo(sanitize(text), err=err)
 
 
 @app.command()
@@ -37,13 +72,13 @@ def policy_validate(
 ) -> None:
     """Exit 0 when the file is a valid policy, exit 1 with every reason otherwise."""
     try:
-        policy = load_policy(file.read_text(encoding="utf-8"))
+        policy = validate_policy(file.read_text(encoding="utf-8"))
     except PolicyError as exc:
         for reason in exc.reasons:
-            typer.echo(f"invalid: {reason}", err=True)
-        raise typer.Exit(code=1) from None
+            say(f"invalid: {reason}", err=True)
+        raise typer.Exit(code=EXIT_ERROR) from None
     enabled = sorted(name for name, module in policy.modules.items() if module.enabled)
-    typer.echo(f"valid: version {policy.version}, enabled modules: {', '.join(enabled) or 'none'}")
+    say(f"valid: version {policy.version}, enabled modules: {', '.join(enabled) or 'none'}")
 
 
 @policy_app.command("check")
@@ -59,44 +94,73 @@ def policy_check(
     policy = None
     if file is not None:
         try:
-            policy = load_policy(file.read_text(encoding="utf-8"))
+            policy = validate_policy(file.read_text(encoding="utf-8"))
         except PolicyError as exc:
-            typer.echo(f"denied: {file} is invalid: {'; '.join(exc.reasons)}")
-            raise typer.Exit(code=1) from None
-    decision = decide(policy, module, verb)
-    typer.echo(str(decision))
-    raise typer.Exit(code=0 if decision.allowed else 1)
+            say(f"denied: {file} is invalid: {'; '.join(exc.reasons)}")
+            raise typer.Exit(code=EXIT_DENIED) from None
+    decision = authorize(policy, module, verb)
+    say(str(decision))
+    raise typer.Exit(code=EXIT_OK if decision.allowed else EXIT_DENIED)
 
 
-def build_gate(caller_token: str | None = None) -> Gate:
-    """Wire the production adapters. The App key comes from the environment only."""
-    tokens = AppTokenProvider(EnvKeySource())
-    return Gate(tokens, HttpGitHubApi, HANDLERS, caller_token=caller_token)
+def token_provider_from_env(env: Mapping[str, str]) -> TokenProvider:
+    """Pick the provider named by ``LKTEC_BOT_TOKEN_PROVIDER`` (default ``app``)."""
+    name = env.get(PROVIDER_VAR, "").strip() or "app"
+    if name == "app":
+        return AppTokenProvider(EnvKeySource(env), base_url=api_url_from_env(env))
+    raise ConfigError(
+        f"{PROVIDER_VAR}={name!r} is not a known token provider (known: {', '.join(PROVIDERS)})"
+    )
 
 
-def add_verb_command(verb: Verb, *, target: Target | None = None) -> None:
+def api_url_from_env(env: Mapping[str, str]) -> str:
+    """``LKTEC_BOT_API_URL`` for GitHub Enterprise Server, else api.github.com."""
+    return env.get(API_URL_VAR, "").strip() or DEFAULT_BASE_URL
+
+
+def build_gate(env: Mapping[str, str] | None = None) -> Gate:
+    """Wire the production adapters. Everything comes from the environment, never from flags.
+
+    The caller must close the gate (``contextlib.closing``) to release the provider's client.
+    """
+    environment = env if env is not None else os.environ
+    base_url = api_url_from_env(environment)
+
+    def api_factory(token: str) -> GitHubApi:
+        return HttpGitHubApi(token, base_url=base_url)
+
+    return Gate(
+        token_provider_from_env(environment),
+        api_factory,
+        handlers(),
+        caller_token=environment.get(CALLER_TOKEN_VAR, "").strip() or None,
+        mask=mask_secret,
+    )
+
+
+def add_verb_command(spec: VerbSpec) -> None:
     """Register ``lktec-bot <verb> --repository owner/name --module m`` for a verb."""
+    verb = spec.verb
 
     def command(
         repository: Annotated[
             str, typer.Option("--repository", "-R", help="Target repository as owner/name.")
         ],
         module: Annotated[str, typer.Option("--module", "-m", help="Module asking for the verb.")],
-        caller_token: Annotated[
-            str | None,
-            typer.Option(
-                "--caller-token",
-                envvar="LKTEC_BOT_CALLER_TOKEN",
-                help="Token used only to read the policy file (e.g. GITHUB_TOKEN).",
-            ),
-        ] = None,
     ) -> None:
-        owner, _, repo = repository.partition("/")
-        if not owner or not repo:
-            typer.echo("--repository must be owner/name", err=True)
-            raise typer.Exit(code=2)
-        request = VerbRequest(owner=owner, repo=repo, module=module, verb=verb, target=target)
-        result = build_gate(caller_token).run(request)
+        try:
+            owner, repo = parse_repository(repository)
+        except ValueError as exc:
+            say(f"--repository: {exc}", err=True)
+            raise typer.Exit(code=EXIT_USAGE) from None
+        request = VerbRequest(owner=owner, repo=repo, module=module, verb=verb)
+        try:
+            gate = build_gate()
+        except ConfigError as exc:
+            say(str(exc), err=True)
+            raise typer.Exit(code=EXIT_USAGE) from None
+        with closing(gate):
+            result = gate.run(request)
         _report(request, result)
 
     command.__name__ = verb.value.replace("-", "_")
@@ -106,13 +170,16 @@ def add_verb_command(verb: Verb, *, target: Target | None = None) -> None:
 
 def _report(request: VerbRequest, result: VerbResult) -> None:
     write_summary(result.to_markdown(request))
-    typer.echo(f"{result.outcome.value}: {result.message}")
-    if not result.ok:
-        raise typer.Exit(code=1)
+    say(f"{result.outcome.value}: {result.message}")
+    for warning in result.warnings:
+        say(f"warning: {warning}", err=True)
+    if result.ok:
+        return
+    raise typer.Exit(code=EXIT_ERROR if result.outcome.value == "error" else EXIT_DENIED)
 
 
-# One line per verb. Later verbs register here the same way.
-add_verb_command(Verb.PING)
+for _spec in load_verbs().values():
+    add_verb_command(_spec)
 
 
 if __name__ == "__main__":  # pragma: no cover

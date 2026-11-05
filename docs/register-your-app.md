@@ -58,6 +58,9 @@ The core reads the App credentials from the environment:
 | `LKTEC_BOT_APP_ID`           | The App ID (a number).                                         |
 | `LKTEC_BOT_PRIVATE_KEY`      | The PEM text. Real newlines or literal `\n` both work.         |
 | `LKTEC_BOT_PRIVATE_KEY_FILE` | Alternatively, a path to the `.pem` file.                      |
+| `LKTEC_BOT_API_URL`          | Optional. API base URL of a GitHub Enterprise Server instance. |
+| `LKTEC_BOT_TOKEN_PROVIDER`   | Optional. `app` (default); an unknown name is an error.        |
+| `LKTEC_BOT_CALLER_TOKEN`     | Optional. A token used only to read the policy file.           |
 
 In GitHub Actions put the App ID into a repository *variable* and the key into a *secret*:
 
@@ -71,14 +74,15 @@ jobs:
       - uses: actions/checkout@<sha> # vX.Y.Z
       - uses: astral-sh/setup-uv@<sha> # vX.Y.Z
       - run: uv sync --locked
-      - run: uv run lktec-bot ping --repository "${{ github.repository }}" --module automerge
+      - run: uv run lktec-bot ping --repository "${{ github.repository }}" --module ping
         env:
           LKTEC_BOT_APP_ID: ${{ vars.LKTEC_BOT_APP_ID }}
           LKTEC_BOT_PRIVATE_KEY: ${{ secrets.LKTEC_BOT_PRIVATE_KEY }}
 ```
 
-The job summary then shows `OK ping on you/your-repo (automerge): pong from you/your-repo`,
-or the reason it was denied.
+The repository's `.github/lktec-bot.yml` needs `ping: {enabled: true}` under `modules` for
+this. The job summary then shows `OK ping on you/your-repo (ping): pong from you/your-repo`,
+or the reason it was denied (exit code 3).
 
 ## 5. What happens on every run
 
@@ -86,9 +90,11 @@ or the reason it was denied.
 2. It looks up the installation for the target repository
    (`GET /repos/{owner}/{repo}/installation`).
 3. It mints an installation token for that one repository, narrowed to the verb's permission
-   (`POST /app/installations/{id}/access_tokens` with `repositories` and `permissions`).
+   (`POST /app/installations/{id}/access_tokens` with `repositories` and `permissions`), and
+   checks that the permissions and repositories GitHub reports for the token are no more than
+   that; in Actions the token value is masked (`::add-mask::`) right away.
 4. The verb runs. The token is revoked (`DELETE /installation/token`) whether or not it
-   succeeded.
+   succeeded; a revoke that fails is reported as a warning, the result stands.
 
 Installation tokens expire after one hour on their own; revoking them early is defence in
 depth, not the only safeguard.

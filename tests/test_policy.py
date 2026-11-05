@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from lktec_bot.domain.permissions import Verb
 from lktec_bot.domain.policy import (
     POLICY_PATH,
-    AutomergeConfig,
     ModuleConfig,
     Policy,
     PolicyError,
     decide,
+    format_validation_errors,
     load_policy,
 )
 
@@ -25,58 +26,44 @@ modules:
 """
 
 
-def test_valid_policy_parses_with_typed_modules() -> None:
+def test_valid_policy_parses_and_keeps_options_for_later() -> None:
     policy = load_policy(VALID)
 
     assert policy.version == 1
     automerge = policy.modules["automerge"]
-    assert isinstance(automerge, AutomergeConfig)
     assert automerge.enabled is True
-    assert automerge.exclude == ["some-package"]
-    assert automerge.majors == "auto"
+    assert automerge.options == {"exclude": ["some-package"], "majors": "auto"}
     release = policy.modules["release"]
-    assert type(release) is ModuleConfig
     assert release.enabled is False
+    assert release.options == {}
 
 
 def test_defaults_are_closed() -> None:
     policy = load_policy("version: 1\nmodules:\n  automerge: {}\n")
 
-    automerge = policy.modules["automerge"]
-    assert isinstance(automerge, AutomergeConfig)
-    assert automerge.enabled is False
-    assert automerge.exclude == []
-    assert automerge.majors == "manual"
+    assert policy.modules["automerge"].enabled is False
+    assert policy.modules["automerge"].options == {}
 
 
-def test_module_without_options_is_accepted() -> None:
+def test_module_without_a_value_is_an_empty_entry() -> None:
     policy = load_policy("version: 1\nmodules:\n  automerge:\n")
 
     assert policy.modules["automerge"].enabled is False
 
 
-def test_missing_modules_key_means_no_modules() -> None:
+def test_missing_or_empty_modules_key_means_no_modules() -> None:
     assert load_policy("version: 1\n").modules == {}
+    assert load_policy("version: 1\nmodules:\n").modules == {}
 
 
 @pytest.mark.parametrize(
     ("text", "fragment"),
     [
         ("version: 1\nunknown: true\n", "unknown: Extra inputs are not permitted"),
-        (
-            "version: 1\nmodules:\n  automerge:\n    enabled: true\n    typo: 1\n",
-            "typo: Extra inputs are not permitted",
-        ),
-        (
-            "version: 1\nmodules:\n  release:\n    enabled: true\n    channel: stable\n",
-            "channel: Extra inputs are not permitted",
-        ),
         ("version: 2\n", "version: Input should be 1"),
         ("modules: {}\n", "version: Field required"),
-        (
-            "version: 1\nmodules:\n  automerge:\n    majors: sometimes\n",
-            "majors: Input should be 'manual' or 'auto'",
-        ),
+        ("version: 1\nmodules: [a]\n", "modules: Input should be a valid dictionary"),
+        ("version: 1\nmodules:\n  automerge: 1\n", "modules.automerge: Input should be"),
         ("version: 1\nmodules:\n  automerge:\n    enabled: maybe\n", "enabled: Input should be"),
     ],
 )
@@ -86,6 +73,19 @@ def test_invalid_policy_reports_readable_reasons(text: str, fragment: str) -> No
 
     assert any(fragment in reason for reason in excinfo.value.reasons), excinfo.value.reasons
     assert str(excinfo.value)
+
+
+# ``yes``/``on`` are not in the list: YAML 1.1 (PyYAML) already parses them as booleans.
+@pytest.mark.parametrize("value", ["1", "'true'", "0", "''", "[]", "null"])
+def test_enabled_is_a_strict_boolean(value: str) -> None:
+    with pytest.raises(PolicyError, match=r"modules\.automerge\.enabled: Input should be"):
+        load_policy(f"version: 1\nmodules:\n  automerge:\n    enabled: {value}\n")
+
+
+def test_module_options_are_not_validated_by_the_domain() -> None:
+    policy = load_policy("version: 1\nmodules:\n  anything:\n    enabled: true\n    typo: 1\n")
+
+    assert policy.modules["anything"].options == {"typo": 1}
 
 
 @pytest.mark.parametrize(
@@ -103,7 +103,7 @@ def test_structurally_broken_files(text: str, fragment: str) -> None:
     assert fragment in excinfo.value.reasons[0]
 
 
-def test_enabled_module_allows_every_verb() -> None:
+def test_enabled_module_is_allowed_by_the_domain() -> None:
     policy = load_policy(VALID)
 
     decision = policy.allows("automerge", Verb.ENABLE_AUTOMERGE)
@@ -146,6 +146,17 @@ def test_missing_file_denies_everything() -> None:
 
 
 def test_decide_delegates_to_policy() -> None:
-    policy = Policy(version=1, modules={"automerge": AutomergeConfig(enabled=True)})
+    automerge = ModuleConfig.model_validate({"enabled": True, "majors": "auto"})
+    policy = Policy(version=1, modules={"automerge": automerge})
 
     assert decide(policy, "automerge", Verb.APPROVE).allowed is True
+    assert policy.modules["automerge"].options == {"majors": "auto"}
+
+
+def test_format_validation_errors_prefixes_locations() -> None:
+    with pytest.raises(ValidationError) as excinfo:
+        ModuleConfig.model_validate({"enabled": "no"})
+
+    assert format_validation_errors(excinfo.value, ("modules", "x")) == [
+        "modules.x.enabled: Input should be a valid boolean"
+    ]
