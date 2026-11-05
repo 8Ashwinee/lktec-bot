@@ -104,8 +104,10 @@ verb, so a typo never changes behaviour.
 
 ## Permissions
 
-The workflow itself has `contents: read` and nothing else. Every call goes through the gate with
-its own token, narrowed to one repository:
+The workflow's own `GITHUB_TOKEN` has `contents: read` and `actions: read` and nothing else
+(`actions: read` lets the run look up which commit of the reusable workflow it was called at,
+to install the bot from exactly that commit; the caller grants both). Every call goes through
+the gate with its own token, narrowed to one repository:
 
 | Step                         | Token                                    |
 | ---------------------------- | ---------------------------------------- |
@@ -162,6 +164,17 @@ The `workflows` permission is never requested (see `docs/architecture.md`).
 6. **Ruleset.** Keep the bypass list as small as it can be; the bot does not need to be on it.
    If the ruleset requires an approving review, the bot's approval counts as one (it is a
    different identity from the pull request author).
+
+## How the workflow installs the bot
+
+A reusable workflow cannot use `./actions/setup` (that would be the caller's checkout) and
+cannot read its own repository or commit from the `github` context. The run object lists the
+workflows it references with their repository and commit; the job reads that
+(`referenced_workflows`), checks out that repository at that commit into `.lktec-bot/` and runs
+`./.lktec-bot/actions/setup`. So the pin in the caller (`automerge.yml@<sha>`) decides exactly
+which code runs, and the job fails instead of falling back to a branch when it cannot tell. The
+pull request's own code is never checked out: the job runs on `pull_request_target`, with
+secrets.
 
 ## Dogfooding
 
