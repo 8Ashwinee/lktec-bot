@@ -34,12 +34,15 @@ jobs:
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
           egress-policy: block
+          # setup-uv reads its version manifest from raw.githubusercontent.com and, with the
+          # Astral mirror off, downloads uv from GitHub releases; uv sync talks to PyPI only.
           allowed-endpoints: >
             api.github.com:443
             files.pythonhosted.org:443
             github.com:443
             objects.githubusercontent.com:443
             pypi.org:443
+            raw.githubusercontent.com:443
             release-assets.githubusercontent.com:443
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -48,6 +51,7 @@ jobs:
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: false
+          download-from-astral-mirror: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
@@ -70,6 +74,7 @@ jobs:
             github.com:443
             objects.githubusercontent.com:443
             pypi.org:443
+            raw.githubusercontent.com:443
             release-assets.githubusercontent.com:443
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -78,6 +83,7 @@ jobs:
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: false
+          download-from-astral-mirror: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
