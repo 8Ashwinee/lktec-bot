@@ -9,7 +9,13 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Protocol
 
-from lktec_bot.application.modules import MODULES, ModuleSpec, authorize, validate_policy
+from lktec_bot.application.modules import (
+    MODULES,
+    ModuleSpec,
+    authorize,
+    authorize_module,
+    validate_policy,
+)
 from lktec_bot.domain.permissions import Target, Verb, as_token_request, permissions_for
 from lktec_bot.domain.policy import POLICY_PATH, Policy, PolicyError
 from lktec_bot.ports.github_api import GitHubApi, GitHubApiFactory
@@ -108,6 +114,20 @@ class VerbResult:
         return line + "\n"
 
 
+@dataclass(frozen=True, slots=True)
+class ReadResult[T]:
+    """What :meth:`Gate.read` hands back: the reader's value, or why it did not run.
+
+    ``failure`` is a ``denied`` or ``error`` :class:`VerbResult` (policy denial, token problem,
+    a reader that raised); exactly one of the two fields is set. ``warnings`` carries what went
+    wrong without changing the outcome (a token that could not be revoked).
+    """
+
+    value: T | None = None
+    failure: VerbResult | None = None
+    warnings: tuple[str, ...] = ()
+
+
 class VerbHandler(Protocol):
     """A verb: given a client bound to the narrowed token, do one thing and report."""
 
@@ -163,18 +183,9 @@ class Gate:
             return VerbResult(VerbOutcome.DENIED, reason)
 
         warnings: list[str] = []
-        try:
-            policy = self._load_policy(request, warnings)
-        except PolicyError as exc:
-            reasons = "; ".join(exc.reasons)
-            result = VerbResult(VerbOutcome.DENIED, f"{self._policy_path} is invalid: {reasons}")
-            return result.with_warnings(*warnings)
-        except TokenError as exc:
-            result = VerbResult(VerbOutcome.ERROR, f"could not mint the policy token: {exc}")
-            return result.with_warnings(*warnings)
-        except Exception as exc:  # every failure must become a result, never a traceback
-            message = f"could not read {self._policy_path}: {type(exc).__name__}: {exc}"
-            return VerbResult(VerbOutcome.ERROR, message).with_warnings(*warnings)
+        policy, failure = self._policy_or_failure(request.owner, request.repo, warnings)
+        if failure is not None:
+            return failure
 
         decision = authorize(policy, request.module, request.verb, self._modules)
         if not decision.allowed:
@@ -186,7 +197,7 @@ class Gate:
             return VerbResult(VerbOutcome.ERROR, str(exc)).with_warnings(*warnings)
 
         try:
-            token = self._mint(request, requested)
+            token = self._mint(request.owner, request.repo, requested)
         except TokenError as exc:
             result = VerbResult(VerbOutcome.ERROR, f"could not mint a token: {exc}")
             return result.with_warnings(*warnings)
@@ -209,32 +220,104 @@ class Gate:
             self._revoke_safely(token, warnings)
         return result.with_warnings(*warnings)
 
+    def read[T](
+        self,
+        owner: str,
+        repo: str,
+        module: str,
+        permissions: Mapping[str, str],
+        reader: Callable[[GitHubApi, Policy], T],
+    ) -> ReadResult[T]:
+        """Run a read-only ``reader`` for a module command, under the same rules as a verb.
+
+        The module must be known and enabled in the policy; the reader gets a client bound to
+        a token narrowed to exactly ``permissions`` (checked like a verb token and revoked
+        afterwards) and the validated policy, so it can read its own options. Nothing a reader
+        does may write: writes are verbs and go through :meth:`run`.
+        """
+        validate_name("owner", owner)
+        validate_name("repository name", repo)
+        if module not in self._modules:
+            reason = authorize(None, module, Verb.PING, self._modules).reason
+            return ReadResult(failure=VerbResult(VerbOutcome.DENIED, reason))
+        warnings: list[str] = []
+        policy, failure = self._policy_or_failure(owner, repo, warnings)
+        if failure is not None:
+            return ReadResult(failure=failure)
+        decision = authorize_module(policy, module, self._modules)
+        if policy is None or not decision.allowed:
+            denied = VerbResult(VerbOutcome.DENIED, decision.reason)
+            return ReadResult(failure=denied.with_warnings(*warnings))
+
+        try:
+            token = self._mint(owner, repo, permissions)
+        except TokenError as exc:
+            result = VerbResult(VerbOutcome.ERROR, f"could not mint a token: {exc}")
+            return ReadResult(failure=result.with_warnings(*warnings))
+        except Exception as exc:  # a bug in the provider, not a GitHub answer
+            message = f"unexpected error while minting a token ({type(exc).__name__}): {exc}"
+            return ReadResult(
+                failure=VerbResult(VerbOutcome.ERROR, message).with_warnings(*warnings)
+            )
+
+        problem = self._scope_problem(token, permissions, repo)
+        if problem is not None:
+            self._revoke_safely(token, warnings)
+            result = VerbResult(VerbOutcome.ERROR, f"read token refused: {problem}")
+            return ReadResult(failure=result.with_warnings(*warnings))
+        try:
+            with closing(self._api_factory(token.value)) as api:
+                outcome = ReadResult(value=reader(api, policy))
+        except Exception as exc:
+            failed = VerbResult(VerbOutcome.ERROR, f"{module} could not read: {exc}")
+            outcome = ReadResult(failure=failed)
+        finally:
+            self._revoke_safely(token, warnings)
+        return replace(outcome, warnings=tuple(warnings))
+
     # -- helpers ---------------------------------------------------------------------------
 
-    def _mint(self, request: VerbRequest, permissions: Mapping[str, str]) -> Token:
-        token = self._tokens.token_for(request.owner, request.repo, permissions)
+    def _mint(self, owner: str, repo: str, permissions: Mapping[str, str]) -> Token:
+        token = self._tokens.token_for(owner, repo, permissions)
         if self._mask is not None:
             self._mask(token.value)
         return token
 
-    def _load_policy(self, request: VerbRequest, warnings: list[str]) -> Policy | None:
+    def _policy_or_failure(
+        self, owner: str, repo: str, warnings: list[str]
+    ) -> tuple[Policy | None, VerbResult | None]:
+        """The policy (``None`` when the file is missing), or the result that ends the run."""
+        try:
+            return self._load_policy(owner, repo, warnings), None
+        except PolicyError as exc:
+            reasons = "; ".join(exc.reasons)
+            result = VerbResult(VerbOutcome.DENIED, f"{self._policy_path} is invalid: {reasons}")
+            return None, result.with_warnings(*warnings)
+        except TokenError as exc:
+            result = VerbResult(VerbOutcome.ERROR, f"could not mint the policy token: {exc}")
+            return None, result.with_warnings(*warnings)
+        except Exception as exc:  # every failure must become a result, never a traceback
+            message = f"could not read {self._policy_path}: {type(exc).__name__}: {exc}"
+            return None, VerbResult(VerbOutcome.ERROR, message).with_warnings(*warnings)
+
+    def _load_policy(self, owner: str, repo: str, warnings: list[str]) -> Policy | None:
         if self._caller_token is not None:
             with closing(self._api_factory(self._caller_token)) as api:
-                return self._read_policy(api, request)
-        token = self._mint(request, POLICY_READ_PERMISSIONS)
+                return self._read_policy(api, owner, repo)
+        token = self._mint(owner, repo, POLICY_READ_PERMISSIONS)
         try:
-            problem = self._scope_problem(token, POLICY_READ_PERMISSIONS, request.repo)
+            problem = self._scope_problem(token, POLICY_READ_PERMISSIONS, repo)
             if problem is not None:
                 raise TokenError(f"policy token refused: {problem}")
             with closing(self._api_factory(token.value)) as api:
-                return self._read_policy(api, request)
+                return self._read_policy(api, owner, repo)
         finally:
             self._revoke_safely(token, warnings)
 
-    def _read_policy(self, api: GitHubApi, request: VerbRequest) -> Policy | None:
+    def _read_policy(self, api: GitHubApi, owner: str, repo: str) -> Policy | None:
         # No ref: the policy comes from the default branch, never from a pull request head,
         # so a PR cannot bring its own permissions along.
-        text = api.get_file_content(request.owner, request.repo, self._policy_path)
+        text = api.get_file_content(owner, repo, self._policy_path)
         if text is None:
             return None
         return validate_policy(text, self._modules)

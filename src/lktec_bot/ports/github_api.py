@@ -22,6 +22,13 @@ class PullRequest:
     draft: bool
     head_sha: str
     auto_merge_method: MergeMethod | None = None  # set when auto-merge is already enabled
+    title: str = ""
+    body: str = ""
+    author_login: str = ""  # ``dependabot[bot]`` for Dependabot, a user's login otherwise
+    # GitHub's ``mergeable_state`` in upper case (``BEHIND``, ``DIRTY``, ``CLEAN``, ``BLOCKED``,
+    # ``UNSTABLE``, ``UNKNOWN``, ...). Only the single-pull-request call reports it; GitHub
+    # computes it lazily, so ``UNKNOWN`` means "ask again in a moment". Empty when not reported.
+    merge_state: str = ""
 
     @property
     def open(self) -> bool:
@@ -70,6 +77,14 @@ class GitHubApi(Protocol):
 
     def get_pull_request(self, owner: str, repo: str, number: int) -> PullRequest:
         """Fetch the state of pull request ``number``."""
+        ...
+
+    def list_pull_requests(self, owner: str, repo: str) -> Sequence[PullRequest]:
+        """Every open pull request, oldest first. ``merge_state`` is not reported by a list."""
+        ...
+
+    def list_pull_request_files(self, owner: str, repo: str, number: int) -> Sequence[str]:
+        """The paths pull request ``number`` changes (a renamed file contributes both paths)."""
         ...
 
     def list_reviews(self, owner: str, repo: str, number: int) -> Sequence[Review]:

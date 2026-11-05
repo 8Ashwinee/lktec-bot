@@ -66,7 +66,11 @@ jobs:
           uv export --frozen --no-dev --group build --no-emit-project --hashes -o requirements.txt
           git diff --exit-code -- requirements.txt
       - name: Workflow and action YAML parse strictly
-        run: uv run python tools/check_yaml.py .github/workflows actions .github/lktec-bot.yml
+        run: uv run python tools/check_yaml.py .github/workflows actions templates .github/lktec-bot.yml
+      - name: Policy files validate against the module registry
+        run: |
+          uv run lktec-bot policy validate .github/lktec-bot.yml
+          uv run lktec-bot policy validate templates/lktec-bot.yml
 
   test:
     runs-on: ubuntu-latest

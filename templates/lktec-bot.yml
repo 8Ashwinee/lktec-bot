@@ -1,0 +1,15 @@
+# .github/lktec-bot.yml of a repository that uses the automerge workflow. Committed to the
+# default branch: the bot reads it from there, never from a pull request.
+version: 1
+modules:
+  automerge:
+    enabled: true
+    # patch, minor and digest updates are armed; manual leaves majors to a person.
+    majors: manual # manual | auto
+    # auto arms a pull request that changes .github/workflows/; manual leaves it to a person.
+    workflow-files: auto # auto | manual
+    # How GitHub merges once the checks are green.
+    method: squash # squash | merge | rebase
+    # Dependency names (exact, case-insensitive) that are never approved or armed. A grouped
+    # pull request is skipped as a whole when any member is listed.
+    exclude: []

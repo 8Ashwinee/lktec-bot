@@ -110,20 +110,22 @@ class HttpGitHubApi:
 
     def get_pull_request(self, owner: str, repo: str, number: int) -> PullRequest:
         payload = self._request("GET", f"/repos/{owner}/{repo}/pulls/{number}").json()
-        if not isinstance(payload, dict) or not isinstance(payload.get("head"), dict):
-            raise GitHubHttpError(f"pull request {number} has no head in the API answer")
-        auto_merge = payload.get("auto_merge")
-        method: MergeMethod | None = None
-        if isinstance(auto_merge, dict):
-            method = _merge_method(auto_merge.get("merge_method"))
-        return PullRequest(
-            number=int(payload.get("number", number)),
-            html_url=str(payload.get("html_url", "")),
-            state=str(payload.get("state", "")),
-            draft=bool(payload.get("draft", False)),
-            head_sha=str(payload["head"].get("sha", "")),
-            auto_merge_method=method,
+        return _pull_request(payload, number)
+
+    def list_pull_requests(self, owner: str, repo: str) -> list[PullRequest]:
+        entries = self._paginate(
+            f"/repos/{owner}/{repo}/pulls",
+            {"state": "open", "sort": "created", "direction": "asc"},
         )
+        return [_pull_request(entry, 0) for entry in entries]
+
+    def list_pull_request_files(self, owner: str, repo: str, number: int) -> list[str]:
+        paths: list[str] = []
+        for entry in self._paginate(f"/repos/{owner}/{repo}/pulls/{number}/files"):
+            paths.append(str(entry.get("filename", "")))
+            if entry.get("previous_filename"):
+                paths.append(str(entry["previous_filename"]))
+        return paths
 
     def list_reviews(self, owner: str, repo: str, number: int) -> list[Review]:
         return [
@@ -223,13 +225,15 @@ class HttpGitHubApi:
 
     # -- transport -------------------------------------------------------------------------
 
-    def _paginate(self, path: str) -> list[dict[str, Any]]:
+    def _paginate(self, path: str, params: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
         """Every entry of a list endpoint, page by page, until a page is short."""
         entries: list[dict[str, Any]] = []
         page = 1
         while True:
             response = self._request(
-                "GET", path, params={"per_page": _PAGE_SIZE, "page": str(page)}
+                "GET",
+                path,
+                params={**(params or {}), "per_page": _PAGE_SIZE, "page": str(page)},
             )
             payload = response.json()
             if not isinstance(payload, list):
@@ -323,6 +327,29 @@ def _error_messages(errors: object) -> str:
 def _login(entry: Mapping[str, Any]) -> str:
     user = entry.get("user")
     return str(user.get("login", "")) if isinstance(user, dict) else ""
+
+
+def _pull_request(payload: object, number: int) -> PullRequest:
+    """A pull request from the single-PR or the list answer (the list has no mergeable_state)."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("head"), dict):
+        which = f"pull request {number}" if number else "a pull request in the list"
+        raise GitHubHttpError(f"{which} has no head in the API answer")
+    auto_merge = payload.get("auto_merge")
+    method: MergeMethod | None = None
+    if isinstance(auto_merge, dict):
+        method = _merge_method(auto_merge.get("merge_method"))
+    return PullRequest(
+        number=int(payload.get("number", number)),
+        html_url=str(payload.get("html_url", "")),
+        state=str(payload.get("state", "")),
+        draft=bool(payload.get("draft", False)),
+        head_sha=str(payload["head"].get("sha", "")),
+        auto_merge_method=method,
+        title=str(payload.get("title") or ""),
+        body=str(payload.get("body") or ""),
+        author_login=_login(payload),
+        merge_state=str(payload.get("mergeable_state") or "").upper(),
+    )
 
 
 def _merge_method(raw: object) -> MergeMethod | None:

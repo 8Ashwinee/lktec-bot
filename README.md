@@ -45,6 +45,7 @@ modules:
     enabled: true
     exclude: []
     majors: manual
+    workflow-files: auto
   ping:
     enabled: true
 ```
@@ -73,6 +74,8 @@ so far).
   selection, why there is no merge verb and why `workflows` is never requested.
 - [docs/register-your-app.md](docs/register-your-app.md): registering your own App, where to
   store the key, environment variables, rotation.
+- [docs/modules/automerge.md](docs/modules/automerge.md): the automerge module, its options, the
+  differences to the personal-access-token workflow and how to set up a repository.
 - [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ## Verbs and actions
@@ -96,6 +99,17 @@ does not fail the step unless `fail-on-denied: true`. The `E2E` workflow runs th
 this repository on every pull request (ping, and one marked comment per PR that later runs
 update).
 
+## Modules
+
+The [`automerge` module](docs/modules/automerge.md) ports the Dependabot auto-merge workflow
+onto the bot: `lktec-bot automerge arm` classifies a Dependabot pull request (patch, minor,
+digest refresh: routine; major: a person) and has the App approve it and enable auto-merge;
+`lktec-bot automerge sweep` arms what was missed, updates behind branches and asks Dependabot
+to recreate conflicting pull requests. It ships as a reusable workflow
+([`.github/workflows/automerge.yml`](.github/workflows/automerge.yml)) with a caller template
+([`templates/dependabot-auto-merge.yml`](templates/dependabot-auto-merge.yml)). The bot never
+merges: GitHub does, once the required checks are green.
+
 ## Status: phase 1, pre-release
 
 Policy schema, permission table, gate, token minting, HTTP adapter, CLI, the five phase-1
@@ -104,9 +118,8 @@ end-to-end workflow.
 
 Deliberately not in this repository yet:
 
-- **Dependabot auto-merge and release workflows.** Both currently rely on the credentials this
-  project replaces (a personal access token with bypass, a deploy key). They move to the App
-  as the next step, now that `approve` and `enable-automerge` exist; `release` follows.
+- **The release workflow.** It still relies on a credential this project replaces (a deploy key
+  that pushes release commits). `release` follows.
 - **Releases and tags.** No version has been published; `hatch-vcs` derives the version from
   tags once they exist. Until then pin the actions by commit SHA.
 

@@ -1,0 +1,27 @@
+name: Dependabot auto-merge
+
+# Thin caller of the automerge workflow of lktec-bot. The triggers stay here because a reusable
+# workflow cannot declare them for the caller. Put this file at
+# .github/workflows/dependabot-auto-merge.yml and read docs/modules/automerge.md of lktec-bot
+# for the bootstrap (install the App, two secrets, the policy file) before it first runs.
+#
+# Replace <sha> with a commit of lukislp/lktec-bot (a release tag's commit once there is one)
+# and the date with the day you pinned it. Like every other reference it stays pinned by SHA.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, auto_merge_enabled]
+  schedule:
+    - cron: "23 * * * *"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  automerge:
+    uses: lukislp/lktec-bot/.github/workflows/automerge.yml@<sha> # 2026-11-05
+    secrets:
+      app-id: ${{ secrets.LKTEC_BOT_APP_ID }}
+      private-key: ${{ secrets.LKTEC_BOT_PRIVATE_KEY }}
