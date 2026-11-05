@@ -1,0 +1,29 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you run, what did you expect, what happened instead?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `lktec-bot version`, or the release or tag you are running.
+    validations:
+      required: true
+  - type: input
+    id: verb
+    attributes:
+      label: Verb and module
+      description: "For example: ping via automerge"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or job summary
+      description: Relevant log lines or the job summary. Please remove tokens and personal data.
+      render: text
