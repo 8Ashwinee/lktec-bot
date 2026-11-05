@@ -8,6 +8,7 @@ import pytest
 import respx
 
 from lktec_bot.adapters.github_http import GitHubHttpError, HttpGitHubApi
+from lktec_bot.ports.github_api import BranchUpdate, IssueComment, PullRequest, Review
 
 BASE = "https://api.github.test"
 CONTENTS = "/repos/acme/widgets/contents/.github/lktec-bot.yml"
@@ -274,13 +275,182 @@ def test_transport_error_is_not_retried_on_the_last_attempt(respx_mock: respx.Mo
 
 
 @respx.mock(base_url=BASE)
-def test_update_branch_returns_message(api: HttpGitHubApi, respx_mock: respx.MockRouter) -> None:
+def test_update_branch_accepted(api: HttpGitHubApi, respx_mock: respx.MockRouter) -> None:
     route = respx_mock.put("/repos/acme/widgets/pulls/5/update-branch").respond(
         202, json={"message": "Updating pull request branch.", "url": "u"}
     )
 
-    assert api.update_branch("acme", "widgets", 5, "abc123") == "Updating pull request branch."
+    assert api.update_branch("acme", "widgets", 5, "abc123") is BranchUpdate.ACCEPTED
     assert json.loads(route.calls[0].request.content) == {"expected_head_sha": "abc123"}
+
+
+@respx.mock(base_url=BASE)
+def test_update_branch_already_up_to_date_is_not_an_error(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.put("/repos/acme/widgets/pulls/5/update-branch").respond(
+        422, json={"message": "There are no new commits on the base branch."}
+    )
+
+    assert api.update_branch("acme", "widgets", 5, "abc123") is BranchUpdate.UP_TO_DATE
+
+
+@respx.mock(base_url=BASE)
+def test_update_branch_other_422_is_an_error(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.put("/repos/acme/widgets/pulls/5/update-branch").respond(
+        422, json={"message": "expected_head_sha does not match the current head"}
+    )
+
+    with pytest.raises(GitHubHttpError, match="does not match") as excinfo:
+        api.update_branch("acme", "widgets", 5, "abc123")
+    assert excinfo.value.status == 422
+
+
+@respx.mock(base_url=BASE)
+def test_get_pull_request_maps_the_fields(api: HttpGitHubApi, respx_mock: respx.MockRouter) -> None:
+    respx_mock.get("/repos/acme/widgets/pulls/5").respond(
+        200,
+        json={
+            "number": 5,
+            "html_url": "https://github.test/acme/widgets/pull/5",
+            "state": "open",
+            "draft": False,
+            "head": {"sha": "abc123"},
+            "auto_merge": {"merge_method": "squash", "enabled_by": {"login": "x"}},
+        },
+    )
+
+    pull_request = api.get_pull_request("acme", "widgets", 5)
+
+    assert pull_request == PullRequest(
+        number=5,
+        html_url="https://github.test/acme/widgets/pull/5",
+        state="open",
+        draft=False,
+        head_sha="abc123",
+        auto_merge_method="SQUASH",
+    )
+    assert pull_request.open
+
+
+@pytest.mark.parametrize(
+    ("auto_merge", "expected"),
+    [
+        (None, None),
+        ({"merge_method": "merge"}, "MERGE"),
+        ({"merge_method": "rebase"}, "REBASE"),
+        ({"merge_method": "fast-forward"}, None),
+    ],
+)
+@respx.mock(base_url=BASE)
+def test_get_pull_request_auto_merge_variants(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter, auto_merge: object, expected: str | None
+) -> None:
+    respx_mock.get("/repos/acme/widgets/pulls/5").respond(
+        200, json={"state": "closed", "draft": True, "head": {"sha": "s"}, "auto_merge": auto_merge}
+    )
+
+    pull_request = api.get_pull_request("acme", "widgets", 5)
+
+    assert pull_request.auto_merge_method == expected
+    assert pull_request.number == 5
+    assert pull_request.draft is True
+    assert not pull_request.open
+
+
+@respx.mock(base_url=BASE)
+def test_get_pull_request_without_a_head_is_an_error(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.get("/repos/acme/widgets/pulls/5").respond(200, json={"number": 5})
+
+    with pytest.raises(GitHubHttpError, match="no head"):
+        api.get_pull_request("acme", "widgets", 5)
+
+
+@respx.mock(base_url=BASE)
+def test_list_reviews_maps_the_fields(api: HttpGitHubApi, respx_mock: respx.MockRouter) -> None:
+    respx_mock.get("/repos/acme/widgets/pulls/5/reviews").respond(
+        200,
+        json=[
+            {
+                "user": {"login": "my-bot[bot]"},
+                "state": "APPROVED",
+                "commit_id": "abc",
+                "html_url": "r1",
+            },
+            {"user": None, "state": "COMMENTED", "commit_id": "abc", "html_url": "r2"},
+        ],
+    )
+
+    assert api.list_reviews("acme", "widgets", 5) == [
+        Review("my-bot[bot]", "APPROVED", "abc", "r1"),
+        Review("", "COMMENTED", "abc", "r2"),
+    ]
+
+
+@respx.mock(base_url=BASE)
+def test_list_issue_comments_follows_the_pages(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter
+) -> None:
+    def entry(index: int) -> dict[str, object]:
+        return {
+            "id": index,
+            "user": {"login": "my-bot[bot]", "type": "Bot"},
+            "body": f"c{index}",
+            "html_url": f"u{index}",
+        }
+
+    route = respx_mock.get("/repos/acme/widgets/issues/5/comments")
+    route.side_effect = [
+        httpx.Response(200, json=[entry(i) for i in range(100)]),
+        httpx.Response(200, json=[entry(100), {"id": 101, "user": None, "body": None}, "junk"]),
+    ]
+
+    comments = api.list_issue_comments("acme", "widgets", 5)
+
+    assert len(comments) == 102
+    assert comments[0] == IssueComment(0, "my-bot[bot]", "Bot", "c0", "u0")
+    assert comments[101] == IssueComment(101, "", "", "", "")
+    assert route.calls[0].request.url.params["per_page"] == "100"
+    assert route.calls[0].request.url.params["page"] == "1"
+    assert route.calls[1].request.url.params["page"] == "2"
+
+
+@respx.mock(base_url=BASE)
+def test_list_that_is_not_a_list_is_an_error(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.get("/repos/acme/widgets/issues/5/comments").respond(200, json={"message": "x"})
+
+    with pytest.raises(GitHubHttpError, match="did not answer with a list"):
+        api.list_issue_comments("acme", "widgets", 5)
+
+
+@respx.mock(base_url=BASE)
+def test_update_issue_comment_patches_the_body(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.patch("/repos/acme/widgets/issues/comments/42").respond(
+        200, json={"html_url": "https://github.test/c/42"}
+    )
+
+    assert api.update_issue_comment("acme", "widgets", 42, "new") == "https://github.test/c/42"
+    assert json.loads(route.calls[0].request.content) == {"body": "new"}
+
+
+@respx.mock(base_url=BASE)
+def test_patch_is_not_retried_on_5xx(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter, sleeps: list[float]
+) -> None:
+    route = respx_mock.patch("/repos/acme/widgets/issues/comments/42").respond(502)
+
+    with pytest.raises(GitHubHttpError, match="502"):
+        api.update_issue_comment("acme", "widgets", 42, "new")
+    assert route.call_count == 1
+    assert sleeps == []
 
 
 @respx.mock(base_url=BASE)

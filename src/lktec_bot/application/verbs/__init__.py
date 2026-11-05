@@ -1,8 +1,12 @@
 """Verb registry. Adding a verb is one new file in this package.
 
-A verb module declares its handler and its grants together::
+A verb module declares its handler, its grants and its command line options together::
 
-    @register(Verb.APPROVE, grants=frozenset({Grant(Permission.PULL_REQUESTS, "write")}))
+    @register(
+        Verb.APPROVE,
+        grants=frozenset({Grant(Permission.PULL_REQUESTS, "write")}),
+        options=(Option("number", "Pull request number.", kind="int", required=True),),
+    )
     def approve(api: GitHubApi, request: VerbRequest) -> VerbResult: ...
 
 The canonical permission table stays in ``lktec_bot/domain/permissions.py`` so the footprint
@@ -10,14 +14,20 @@ of every planned verb is reviewed in one place; ``register`` refuses a handler w
 grants differ from that table, so the two cannot drift apart. :func:`load_verbs` imports every
 module of this package with ``pkgutil`` and returns the registry; nothing is imported at
 package import time, which is what keeps the import graph acyclic.
+
+The options are declarative (name, kind, help); the CLI turns them into flags and the parsed
+values arrive in ``VerbRequest.args`` under the option's name. The registry itself knows
+nothing about typer.
 """
 
 from __future__ import annotations
 
 import importlib
 import pkgutil
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import Literal
 
 from lktec_bot.application.gate import VerbHandler
 from lktec_bot.domain.permissions import Grant, Target, Verb, permissions_for
@@ -25,25 +35,62 @@ from lktec_bot.domain.permissions import Grant, Target, Verb, permissions_for
 # Either one grant set, or one per target for the verbs whose permission depends on it.
 GrantSpec = frozenset[Grant] | Mapping[Target, frozenset[Grant]]
 
+# ``text`` is a body: the CLI offers both ``--<name>`` (inline) and ``--<name>-file`` (a path).
+OptionKind = Literal["int", "str", "choice", "text"]
+
+_OPTION_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+@dataclass(frozen=True, slots=True)
+class Option:
+    """One command line option of a verb; its value lands in ``VerbRequest.args[name]``."""
+
+    name: str
+    help: str
+    kind: OptionKind = "str"
+    required: bool = False
+    choices: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not _OPTION_NAME.match(self.name):
+            raise ValueError(f"option name {self.name!r} must be snake_case")
+        if (self.kind == "choice") != bool(self.choices):
+            raise ValueError(f"option {self.name!r}: choices go with kind='choice' only")
+
+    @property
+    def flag(self) -> str:
+        return "--" + self.name.replace("_", "-")
+
 
 @dataclass(frozen=True, slots=True)
 class VerbSpec:
     verb: Verb
     handler: VerbHandler
     grants: GrantSpec
+    options: tuple[Option, ...] = ()
+
+    @property
+    def takes_target(self) -> bool:
+        """Whether the verb's permission depends on a target (``--target`` on the CLI)."""
+        return isinstance(self.grants, Mapping)
 
 
 REGISTRY: dict[Verb, VerbSpec] = {}
 
 
-def register(verb: Verb, *, grants: GrantSpec) -> Callable[[VerbHandler], VerbHandler]:
+def register(
+    verb: Verb, *, grants: GrantSpec, options: tuple[Option, ...] = ()
+) -> Callable[[VerbHandler], VerbHandler]:
     """Register ``handler`` for ``verb``; ``grants`` must equal the domain table's entry."""
 
     def decorator(handler: VerbHandler) -> VerbHandler:
         if verb in REGISTRY:
             raise ValueError(f"verb {verb.value!r} is already registered")
         _check_grants(verb, grants)
-        REGISTRY[verb] = VerbSpec(verb, handler, grants)
+        names = [option.name for option in options]
+        if len(set(names)) != len(names):
+            raise ValueError(f"verb {verb.value!r} declares an option twice")
+        REGISTRY[verb] = VerbSpec(verb, handler, grants, options)
         return handler
 
     return decorator
@@ -87,4 +134,13 @@ def _render(grants: Mapping[Target | None, frozenset[Grant]]) -> str:
     return "; ".join(parts)
 
 
-__all__ = ["REGISTRY", "GrantSpec", "VerbSpec", "handlers", "load_verbs", "register"]
+__all__ = [
+    "REGISTRY",
+    "GrantSpec",
+    "Option",
+    "OptionKind",
+    "VerbSpec",
+    "handlers",
+    "load_verbs",
+    "register",
+]

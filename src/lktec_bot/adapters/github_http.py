@@ -10,7 +10,20 @@ from typing import Any
 import httpx
 
 from lktec_bot.adapters._http_common import DEFAULT_BASE_URL, github_headers
-from lktec_bot.ports.github_api import MergeMethod, ReviewEvent
+from lktec_bot.ports.github_api import (
+    BranchUpdate,
+    IssueComment,
+    MergeMethod,
+    PullRequest,
+    Review,
+    ReviewEvent,
+)
+
+# GitHub's 422 for an update-branch call that has nothing to merge. Matched loosely on purpose:
+# the wording is not part of the API contract.
+_UP_TO_DATE_PHRASES = ("no new commits", "up to date", "up-to-date")
+# One page of a list; GitHub's maximum.
+_PAGE_SIZE = "100"
 
 # Methods that are safe to repeat after a 5xx or a dropped connection. POST and PATCH are not:
 # the first attempt may have succeeded before the answer was lost, and a second comment,
@@ -95,6 +108,34 @@ class HttpGitHubApi:
             raise GitHubHttpError(f"{path} is not a file with base64 content")
         return base64.b64decode(payload["content"]).decode("utf-8")
 
+    def get_pull_request(self, owner: str, repo: str, number: int) -> PullRequest:
+        payload = self._request("GET", f"/repos/{owner}/{repo}/pulls/{number}").json()
+        if not isinstance(payload, dict) or not isinstance(payload.get("head"), dict):
+            raise GitHubHttpError(f"pull request {number} has no head in the API answer")
+        auto_merge = payload.get("auto_merge")
+        method: MergeMethod | None = None
+        if isinstance(auto_merge, dict):
+            method = _merge_method(auto_merge.get("merge_method"))
+        return PullRequest(
+            number=int(payload.get("number", number)),
+            html_url=str(payload.get("html_url", "")),
+            state=str(payload.get("state", "")),
+            draft=bool(payload.get("draft", False)),
+            head_sha=str(payload["head"].get("sha", "")),
+            auto_merge_method=method,
+        )
+
+    def list_reviews(self, owner: str, repo: str, number: int) -> list[Review]:
+        return [
+            Review(
+                user_login=_login(entry),
+                state=str(entry.get("state", "")),
+                commit_id=str(entry.get("commit_id", "")),
+                html_url=str(entry.get("html_url", "")),
+            )
+            for entry in self._paginate(f"/repos/{owner}/{repo}/pulls/{number}/reviews")
+        ]
+
     def create_review(
         self, owner: str, repo: str, number: int, event: ReviewEvent, body: str = ""
     ) -> str:
@@ -115,17 +156,43 @@ class HttpGitHubApi:
         )
         return _node(data, "enablePullRequestAutoMerge", "pullRequest", "url")
 
-    def update_branch(self, owner: str, repo: str, number: int, expected_head_sha: str) -> str:
-        response = self._request(
-            "PUT",
-            f"/repos/{owner}/{repo}/pulls/{number}/update-branch",
-            json={"expected_head_sha": expected_head_sha},
-        )
-        return str(response.json().get("message", ""))
+    def update_branch(
+        self, owner: str, repo: str, number: int, expected_head_sha: str
+    ) -> BranchUpdate:
+        try:
+            self._request(
+                "PUT",
+                f"/repos/{owner}/{repo}/pulls/{number}/update-branch",
+                json={"expected_head_sha": expected_head_sha},
+            )
+        except GitHubHttpError as exc:
+            message = str(exc).lower()
+            if exc.status == 422 and any(phrase in message for phrase in _UP_TO_DATE_PHRASES):
+                return BranchUpdate.UP_TO_DATE
+            raise
+        return BranchUpdate.ACCEPTED
+
+    def list_issue_comments(self, owner: str, repo: str, number: int) -> list[IssueComment]:
+        return [
+            IssueComment(
+                id=int(entry.get("id", 0)),
+                user_login=_login(entry),
+                user_type=str((entry.get("user") or {}).get("type", "")),
+                body=str(entry.get("body") or ""),
+                html_url=str(entry.get("html_url", "")),
+            )
+            for entry in self._paginate(f"/repos/{owner}/{repo}/issues/{number}/comments")
+        ]
 
     def create_issue_comment(self, owner: str, repo: str, number: int, body: str) -> str:
         response = self._request(
             "POST", f"/repos/{owner}/{repo}/issues/{number}/comments", json={"body": body}
+        )
+        return str(response.json()["html_url"])
+
+    def update_issue_comment(self, owner: str, repo: str, comment_id: int, body: str) -> str:
+        response = self._request(
+            "PATCH", f"/repos/{owner}/{repo}/issues/comments/{comment_id}", json={"body": body}
         )
         return str(response.json()["html_url"])
 
@@ -155,6 +222,22 @@ class HttpGitHubApi:
         return data
 
     # -- transport -------------------------------------------------------------------------
+
+    def _paginate(self, path: str) -> list[dict[str, Any]]:
+        """Every entry of a list endpoint, page by page, until a page is short."""
+        entries: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            response = self._request(
+                "GET", path, params={"per_page": _PAGE_SIZE, "page": str(page)}
+            )
+            payload = response.json()
+            if not isinstance(payload, list):
+                raise GitHubHttpError(f"GET {path} did not answer with a list")
+            entries.extend(entry for entry in payload if isinstance(entry, dict))
+            if len(payload) < int(_PAGE_SIZE):
+                return entries
+            page += 1
 
     def _request(
         self,
@@ -235,6 +318,22 @@ def _error_messages(errors: object) -> str:
         str(error.get("message", error)) if isinstance(error, dict) else str(error)
         for error in errors
     )
+
+
+def _login(entry: Mapping[str, Any]) -> str:
+    user = entry.get("user")
+    return str(user.get("login", "")) if isinstance(user, dict) else ""
+
+
+def _merge_method(raw: object) -> MergeMethod | None:
+    """GitHub reports the method in lower case; the port speaks the GraphQL enum."""
+    if raw == "merge":
+        return "MERGE"
+    if raw == "squash":
+        return "SQUASH"
+    if raw == "rebase":
+        return "REBASE"
+    return None
 
 
 def _node(data: Mapping[str, Any], *path: str) -> str:

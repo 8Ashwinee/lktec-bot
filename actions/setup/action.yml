@@ -1,0 +1,24 @@
+name: lktec-bot setup
+description: >-
+  Install lktec-bot from this checkout of the action repository with its dependencies pinned
+  by hash (requirements.txt is exported from uv.lock). Run it once per job before any verb
+  action.
+
+inputs:
+  python-version:
+    description: Python version for actions/setup-python (3.13 or newer).
+    required: false
+    default: "3.13"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      with:
+        python-version: ${{ inputs.python-version }}
+    - name: Install lktec-bot with pinned dependencies
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        ACTION_REF: ${{ github.action_ref }}
+      run: bash "$ACTION_PATH/install.sh"

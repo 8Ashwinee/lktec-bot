@@ -23,7 +23,9 @@ def provider(key_source: StaticKeySource) -> AppTokenProvider:
 def test_mints_a_token_narrowed_to_repo_and_permissions(
     provider: AppTokenProvider, rsa_key_pair: tuple[str, str], respx_mock: respx.MockRouter
 ) -> None:
-    installation = respx_mock.get("/repos/acme/widgets/installation").respond(200, json={"id": 777})
+    installation = respx_mock.get("/repos/acme/widgets/installation").respond(
+        200, json={"id": 777, "app_slug": "my-bot"}
+    )
     mint = respx_mock.post("/app/installations/777/access_tokens").respond(
         201,
         json={
@@ -41,6 +43,7 @@ def test_mints_a_token_narrowed_to_repo_and_permissions(
     assert token.expires_at == "2024-01-01T00:00:00Z"
     assert token.permissions == {"pull_requests": "write", "metadata": "read"}
     assert token.repositories == frozenset({"widgets"})
+    assert token.actor == "my-bot[bot]"
     assert "ghs_narrow" not in repr(token)
     assert "widgets" in repr(token)
 
@@ -80,6 +83,7 @@ def test_scope_the_api_does_not_report_is_unknown_not_assumed(
 
     assert token.permissions is None
     assert token.repositories is None
+    assert token.actor is None  # no app_slug in the installation answer
 
 
 @respx.mock(base_url=BASE)

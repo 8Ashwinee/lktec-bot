@@ -6,7 +6,7 @@ import pytest
 
 from lktec_bot.application import verbs
 from lktec_bot.application.gate import VerbOutcome, VerbRequest, VerbResult
-from lktec_bot.application.verbs import REGISTRY, handlers, load_verbs, register
+from lktec_bot.application.verbs import REGISTRY, Option, handlers, load_verbs, register
 from lktec_bot.application.verbs.ping import ping
 from lktec_bot.domain.permissions import (
     Grant,
@@ -32,9 +32,53 @@ def test_load_verbs_discovers_every_module_once() -> None:
     assert first[Verb.PING].handler is ping
 
 
-def test_only_ping_ships_in_this_release() -> None:
+def test_the_phase_one_verbs_ship_in_this_release() -> None:
     # The next release that adds a verb updates this line on purpose.
-    assert set(load_verbs()) == {Verb.PING}
+    assert set(load_verbs()) == {
+        Verb.PING,
+        Verb.COMMENT,
+        Verb.APPROVE,
+        Verb.ENABLE_AUTOMERGE,
+        Verb.UPDATE_BRANCH,
+    }
+
+
+def test_every_shipped_verb_declares_its_options() -> None:
+    registry = load_verbs()
+
+    assert registry[Verb.PING].options == ()
+    assert [option.name for option in registry[Verb.COMMENT].options] == [
+        "number",
+        "body",
+        "marker",
+    ]
+    assert [option.name for option in registry[Verb.APPROVE].options] == ["number", "body"]
+    assert [option.name for option in registry[Verb.ENABLE_AUTOMERGE].options] == [
+        "number",
+        "method",
+    ]
+    assert [option.name for option in registry[Verb.UPDATE_BRANCH].options] == ["number"]
+    assert registry[Verb.COMMENT].takes_target
+    assert not registry[Verb.APPROVE].takes_target
+
+
+def test_option_validates_its_shape() -> None:
+    assert Option("body_file", "x").flag == "--body-file"
+    assert Option("method", "x", kind="choice", choices=("a", "b")).choices == ("a", "b")
+    with pytest.raises(ValueError, match="snake_case"):
+        Option("Body-File", "x")
+    with pytest.raises(ValueError, match="choices go with kind='choice'"):
+        Option("m", "x", kind="str", choices=("a",))
+    with pytest.raises(ValueError, match="choices go with kind='choice'"):
+        Option("m", "x", kind="choice")
+
+
+def test_register_refuses_duplicate_option_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(verbs, "REGISTRY", dict(REGISTRY))
+    options = (Option("number", "x"), Option("number", "y"))
+
+    with pytest.raises(ValueError, match="declares an option twice"):
+        register(Verb.RELEASE, grants=permissions_for(Verb.RELEASE), options=options)(handler)
 
 
 def test_every_registered_verb_has_one_handler_whose_grants_match_the_table() -> None:
@@ -48,7 +92,8 @@ def test_every_registered_verb_has_one_handler_whose_grants_match_the_table() ->
 
 
 def test_handlers_map_is_what_the_gate_takes() -> None:
-    assert handlers() == {Verb.PING: ping}
+    assert handlers() == {verb: spec.handler for verb, spec in load_verbs().items()}
+    assert handlers()[Verb.PING] is ping
 
 
 def test_workflows_permission_appears_nowhere() -> None:
@@ -67,19 +112,27 @@ def test_register_refuses_duplicates() -> None:
 
 
 def test_register_refuses_grants_that_differ_from_the_table() -> None:
-    with pytest.raises(ValueError, match="declares grants contents:write but the table"):
-        register(Verb.APPROVE, grants=frozenset({Grant(Permission.CONTENTS, "write")}))(handler)
-    assert Verb.APPROVE not in REGISTRY
+    with pytest.raises(ValueError, match="declares grants pull_requests:write but the table"):
+        register(Verb.RELEASE, grants=frozenset({Grant(Permission.PULL_REQUESTS, "write")}))(
+            handler
+        )
+    assert Verb.RELEASE not in REGISTRY
 
 
 def test_register_checks_per_target_grants_for_comment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(verbs, "REGISTRY", dict(REGISTRY))
+    scratch = dict(REGISTRY)
+    del scratch[Verb.COMMENT]
+    monkeypatch.setattr(verbs, "REGISTRY", scratch)
 
     with pytest.raises(ValueError, match="issue: issues:write; pull_request: pull_requests:write"):
         register(Verb.COMMENT, grants=frozenset({Grant(Permission.ISSUES, "write")}))(handler)
+    with pytest.raises(ValueError, match="declares grants issue: issues:write but the table"):
+        register(Verb.COMMENT, grants={Target.ISSUE: permissions_for(Verb.COMMENT, Target.ISSUE)})(
+            handler
+        )
 
     per_target = {target: permissions_for(Verb.COMMENT, target) for target in Target}
     register(Verb.COMMENT, grants=per_target)(handler)
 
     assert verbs.REGISTRY[Verb.COMMENT].grants == per_target
-    assert Verb.COMMENT not in REGISTRY  # the real registry is untouched
+    assert REGISTRY[Verb.COMMENT].handler is not handler  # the real registry is untouched

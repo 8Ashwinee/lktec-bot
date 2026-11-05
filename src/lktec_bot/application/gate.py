@@ -64,6 +64,8 @@ class VerbRequest:
     verb: Verb
     target: Target | None = None
     args: Mapping[str, object] = field(default_factory=dict)
+    # Filled in by the gate from the minted token: the login the verb acts as, when known.
+    actor: str | None = None
 
     def __post_init__(self) -> None:
         validate_name("owner", self.owner)
@@ -200,7 +202,7 @@ class Gate:
 
         try:
             with closing(self._api_factory(token.value)) as api:
-                result = handler(api, request)
+                result = handler(api, replace(request, actor=token.actor))
         except Exception as exc:
             result = VerbResult(VerbOutcome.ERROR, f"{request.verb.value} failed: {exc}")
         finally:

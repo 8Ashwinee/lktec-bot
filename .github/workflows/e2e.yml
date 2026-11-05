@@ -1,0 +1,103 @@
+name: E2E
+
+# The bot against its own repository, through the composite actions: setup, ping (module
+# ping) and a status comment on the pull request (module automerge, marker e2e). One comment
+# per pull request, updated on every run, never a second one.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      number:
+        description: Pull request to comment on; leave empty to run ping only.
+        required: false
+        default: ""
+
+concurrency:
+  group: e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  verbs:
+    # A pull request from a fork has no secrets, so there is nothing to verify there.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read # the assertion counts the bot's comments with GITHUB_TOKEN
+      issues: read
+    env:
+      POLICY_PATH: .github/lktec-bot.yml
+      PR_NUMBER: ${{ github.event.pull_request.number || inputs.number }}
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: block
+          # pip talks to PyPI only; the bot to api.github.com; setup-python resolves 3.13 from
+          # the tool cache but reads its version manifest from GitHub when it has to.
+          allowed-endpoints: >
+            api.github.com:443
+            files.pythonhosted.org:443
+            github.com:443
+            objects.githubusercontent.com:443
+            pypi.org:443
+            raw.githubusercontent.com:443
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./actions/setup
+
+      - id: ping
+        uses: ./actions/ping
+        with:
+          app-id: ${{ secrets.LKTEC_BOT_APP_ID }}
+          private-key: ${{ secrets.LKTEC_BOT_PRIVATE_KEY }}
+          module: ping
+      - name: Assert ping
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ steps.ping.outputs.result }}
+          MESSAGE: ${{ steps.ping.outputs.message }}
+        run: bash .github/workflows/e2e-assert.sh ping
+
+      - name: Write the comment body
+        if: env.PR_NUMBER != ''
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          {
+            echo "### lktec-bot e2e"
+            echo
+            echo "The bot commented through the gate (module \`automerge\`, verb \`comment\`,"
+            echo "token narrowed to \`pull_requests:write\`, revoked afterwards)."
+            echo
+            echo "- run: $RUN_URL"
+            echo "- head: \`$HEAD_SHA\`"
+            echo "- attempt: ${GITHUB_RUN_ATTEMPT}"
+          } > "${RUNNER_TEMP}/e2e-comment.md"
+      - id: comment
+        if: env.PR_NUMBER != ''
+        uses: ./actions/comment
+        with:
+          app-id: ${{ secrets.LKTEC_BOT_APP_ID }}
+          private-key: ${{ secrets.LKTEC_BOT_PRIVATE_KEY }}
+          module: automerge
+          number: ${{ env.PR_NUMBER }}
+          target: pr
+          body-file: ${{ runner.temp }}/e2e-comment.md
+          marker: e2e
+      - name: Assert comment
+        if: env.PR_NUMBER != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ steps.comment.outputs.result }}
+          MESSAGE: ${{ steps.comment.outputs.message }}
+          URL: ${{ steps.comment.outputs.url }}
+        run: bash .github/workflows/e2e-assert.sh comment

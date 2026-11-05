@@ -75,18 +75,40 @@ so far).
   store the key, environment variables, rotation.
 - [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
+## Verbs and actions
+
+The phase-1 verbs ship: `ping`, `comment` (with an optional marker to update the bot's own
+earlier comment instead of adding one), `approve`, `enable-automerge` and `update-branch`.
+Each is a CLI subcommand and a composite action under [`actions/`](actions/README.md):
+
+```yaml
+- uses: lukislp/lktec-bot/actions/setup@<sha> # vX.Y.Z
+- uses: lukislp/lktec-bot/actions/enable-automerge@<sha> # vX.Y.Z
+  with:
+    app-id: ${{ vars.LKTEC_BOT_APP_ID }}
+    private-key: ${{ secrets.LKTEC_BOT_PRIVATE_KEY }}
+    number: ${{ github.event.pull_request.number }}
+    method: squash
+```
+
+Every action reports `result` (`ok`, `denied`, `error`), `message` and `url`; a policy denial
+does not fail the step unless `fail-on-denied: true`. The `E2E` workflow runs the bot against
+this repository on every pull request (ping, and one marked comment per PR that later runs
+update).
+
 ## Status: phase 1, pre-release
 
-This is the project skeleton: policy schema, permission table, gate, token minting, HTTP
-adapter, CLI and the `ping` verb, all tested. No verb that changes a repository ships yet.
+Policy schema, permission table, gate, token minting, HTTP adapter, CLI, the five phase-1
+verbs and their composite actions, all tested against fakes and mocked HTTP, plus the live
+end-to-end workflow.
 
 Deliberately not in this repository yet:
 
 - **Dependabot auto-merge and release workflows.** Both currently rely on the credentials this
-  project replaces (a personal access token with bypass, a deploy key). They are added once
-  the `approve`, `enable-automerge` and `release` verbs exist and can run under the App.
+  project replaces (a personal access token with bypass, a deploy key). They move to the App
+  as the next step, now that `approve` and `enable-automerge` exist; `release` follows.
 - **Releases and tags.** No version has been published; `hatch-vcs` derives the version from
-  tags once they exist.
+  tags once they exist. Until then pin the actions by commit SHA.
 
 ## License
 

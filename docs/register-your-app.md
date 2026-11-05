@@ -21,7 +21,7 @@ What the parameters mean:
 | ---------------------- | ------- | -------------------------------------------------------------- |
 | `webhook_active`       | `false` | The bot runs from workflows; it receives no events.            |
 | `public`               | `false` | Only you can install it.                                       |
-| `contents`             | `write` | `update-branch`, `commit`, `release` need it. Tokens are narrowed per verb; the App's maximum is not what a verb gets. |
+| `contents`             | `write` | `enable-automerge`, `update-branch`, `commit`, `release` need it. Tokens are narrowed per verb; the App's maximum is not what a verb gets. |
 | `pull_requests`        | `write` | `comment`, `approve`, `enable-automerge`, `update-branch`, `open-pr`. |
 
 Add later, when the matching verbs ship and you want them: `issues: write` (`open-issue`,
@@ -83,6 +83,17 @@ jobs:
 The repository's `.github/lktec-bot.yml` needs `ping: {enabled: true}` under `modules` for
 this. The job summary then shows `OK ping on you/your-repo (ping): pong from you/your-repo`,
 or the reason it was denied (exit code 3).
+
+Without a checkout of this repository, use the composite actions instead (pinned by commit
+SHA; see [`actions/README.md`](../actions/README.md)):
+
+```yaml
+      - uses: lukislp/lktec-bot/actions/setup@<sha> # vX.Y.Z
+      - uses: lukislp/lktec-bot/actions/ping@<sha> # vX.Y.Z
+        with:
+          app-id: ${{ vars.LKTEC_BOT_APP_ID }}
+          private-key: ${{ secrets.LKTEC_BOT_PRIVATE_KEY }}
+```
 
 ## 5. What happens on every run
 

@@ -23,7 +23,11 @@ def test_every_verb_has_a_permission_entry(verb: Verb) -> None:
 def test_table_matches_the_design() -> None:
     assert as_token_request(permissions_for(Verb.PING)) == {"metadata": "read"}
     assert as_token_request(permissions_for(Verb.APPROVE)) == {"pull_requests": "write"}
-    assert as_token_request(permissions_for(Verb.ENABLE_AUTOMERGE)) == {"pull_requests": "write"}
+    # Verified against a real repository: the mutation needs contents:write too.
+    assert as_token_request(permissions_for(Verb.ENABLE_AUTOMERGE)) == {
+        "contents": "write",
+        "pull_requests": "write",
+    }
     assert as_token_request(permissions_for(Verb.UPDATE_BRANCH)) == {
         "contents": "write",
         "pull_requests": "write",

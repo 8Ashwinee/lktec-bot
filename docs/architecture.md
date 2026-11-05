@@ -23,10 +23,14 @@ src/lktec_bot/
   application/   the gate, the module registry and the verbs
     gate.py          Gate.run(VerbRequest) -> VerbResult; owner/repo validation
     modules.py       module registry: name -> allowed verbs + options model; authorize()
-    verbs/           one file per verb: @register(Verb.X, grants=...) on the handler
+    verbs/           one file per verb: @register(Verb.X, grants=..., options=...) on the handler
+      _common.py     --number parsing and the draft/closed refusal shared by the PR verbs
   cli.py         typer entry point; verb subcommands are built from the verb registry
-  summary.py     markdown to $GITHUB_STEP_SUMMARY, ::add-mask:: for minted tokens
+  summary.py     markdown to $GITHUB_STEP_SUMMARY, result/message/url to $GITHUB_OUTPUT,
+                 ::add-mask:: for minted tokens
   text.py        sanitising and markdown escaping for everything that is printed
+actions/         composite actions (setup + one per verb), see actions/README.md
+tools/           repository checks run by CI (strict YAML, action pinning)
 ```
 
 Dependency direction is inward only: `adapters -> ports <- application -> domain`. The domain
@@ -56,8 +60,11 @@ order is fixed and every step fails closed:
    requested plus `metadata:read`, and its repository list must be exactly the target. A
    token that is broader, or whose scope the provider cannot report, is revoked and the run
    is an `error`. The same check runs on the policy-read token.
-7. **Run.** The handler gets a `GitHubApi` bound to that token; the client is closed
-   afterwards.
+7. **Run.** The handler gets a `GitHubApi` bound to that token and the request with `actor`
+   filled in (the login the token acts as, `<app-slug>[bot]`, taken from the installation
+   lookup); the client is closed afterwards. A verb that looks for its own earlier work
+   (`comment` with a marker, `approve`'s idempotency check) matches on that login and fails
+   closed when the provider could not report it.
 8. **Revoke.** Every token is revoked whether or not its user succeeded. A failed revoke is
    retried once and then reported as a warning (`token not revoked ...`) on the result; it
    never replaces the result.
@@ -89,7 +96,16 @@ permission and nothing more" a testable invariant (see `tests/test_gate.py`).
 | 2    | usage or configuration (bad `--repository`, unknown provider) |
 | 3    | denied by policy or by the module registry                    |
 
-A workflow that wants to treat a denial as a soft failure can test for `3`.
+A workflow that wants to treat a denial as a soft failure can test for `3`. The composite
+actions do exactly that: a denial is `result=denied` on a successful step unless
+`fail-on-denied: true`.
+
+### Outputs
+
+Every verb command prints `<outcome>: <message>` (and `url: <url>` when there is one), writes
+the markdown line to `$GITHUB_STEP_SUMMARY`, and appends `result`, `message` and `url` to
+`$GITHUB_OUTPUT` when that variable is set, each collapsed to one line. The composite actions
+expose those three as their outputs.
 
 ### Environment
 
@@ -133,7 +149,7 @@ whole project is reviewed in one place:
 | `ping`             | `metadata:read`                          |
 | `comment`          | `pull_requests:write` or `issues:write`, by target |
 | `approve`          | `pull_requests:write`                    |
-| `enable-automerge` | `pull_requests:write`                    |
+| `enable-automerge` | `contents:write` + `pull_requests:write` |
 | `update-branch`    | `contents:write` + `pull_requests:write` |
 | `commit`           | `contents:write`                         |
 | `open-pr`          | `pull_requests:write`                    |
@@ -142,10 +158,19 @@ whole project is reviewed in one place:
 | `open-issue`       | `issues:write`                           |
 | `deployment`       | `deployments:write`                      |
 
-Only `ping` has a handler today. It changes nothing and exists to exercise the full gate path
-(policy, token, revoke) end to end, with fakes in the tests and against a real App from the
-CLI. `tests/test_verbs.py` pins the set of shipped verbs; adding one updates that line on
-purpose.
+The phase-1 verbs ship: `ping`, `comment`, `approve`, `enable-automerge` and `update-branch`.
+`tests/test_verbs.py` pins the set of shipped verbs; adding one updates that line on purpose.
+
+| Verb               | Options                                   | Behaviour                                                                 |
+| ------------------ | ----------------------------------------- | ------------------------------------------------------------------------- |
+| `ping`             | none                                      | changes nothing; exercises policy, token, scope check and revoke          |
+| `comment`          | `--target pr\|issue --number N --body\|--body-file [--marker ID]` | posts a comment; with a marker, appends `<!-- lktec-bot:ID -->` and on later runs updates the bot's own comment carrying it (matched on the actor login, never on the marker alone); unchanged body is a no-op |
+| `approve`          | `--number N [--body\|--body-file]`        | `APPROVE` review; refuses drafts and closed PRs (`error`); no second review for a head the bot already approved |
+| `enable-automerge` | `--number N --method squash\|merge\|rebase` | GraphQL `enablePullRequestAutoMerge`; refuses drafts and closed PRs; already enabled with the same method is `ok`, with another method an `error` |
+| `update-branch`    | `--number N`                              | `PUT .../update-branch` with the current head sha; 202 is `ok`, GitHub's 422 "no new commits" is `ok` with a message, anything else an `error` |
+
+Every result carries the relevant URL (comment, review or pull request). Nothing a verb
+prints or stores contains a token.
 
 Verb handlers declare their grants next to the code (`@register(Verb.X, grants=...)`), and
 `register` refuses a handler whose grants differ from the table. The table is the source of
@@ -154,9 +179,11 @@ footprint to change.
 
 `enable-automerge` is a GraphQL mutation (`enablePullRequestAutoMerge`). The adapter resolves
 the pull request's node id from `owner/repo/number` first; the port never exposes node ids.
-GitHub documents the mutation under the pull-request permission, but it may additionally need
-`contents:write` on some repositories. This must be verified against a real repository when
-the verb ships; if so, the table row and the registration change together.
+GitHub documents the mutation under the pull-request permission, but a token narrowed to
+`pull_requests:write` alone is refused with `Resource not accessible by integration`
+(verified live against `lukislp/lktec-bot#4`); with `contents:write` added the mutation
+succeeds. The table row and the registration carry both, like `update-branch`, which also
+schedules a write to the branch.
 
 ### Why there is no `merge` verb
 
@@ -181,14 +208,22 @@ person and reviewed as such.
 2. Write the handler in `application/verbs/<name>.py`, one file, nothing else to register:
 
    ```python
-   @register(Verb.APPROVE, grants=frozenset({Grant(Permission.PULL_REQUESTS, "write")}))
+   @register(
+       Verb.APPROVE,
+       grants=frozenset({Grant(Permission.PULL_REQUESTS, "write")}),
+       options=(Option("number", "Pull request number.", kind="int", required=True),),
+   )
    def approve(api: GitHubApi, request: VerbRequest) -> VerbResult:
-       url = api.create_review(request.owner, request.repo, int(request.args["number"]), "APPROVE")
+       url = api.create_review(request.owner, request.repo, number_of(request), "APPROVE")
        return VerbResult(VerbOutcome.OK, "approved", url=url)
    ```
 
    `load_verbs()` discovers the file with `pkgutil`; the CLI builds the subcommand from the
-   registry. For `comment`, `grants` is a mapping from `Target` to grant set.
+   registry: `--repository` and `--module` always, `--target pr|issue` when `grants` is a
+   mapping from `Target` to grant set (`comment`), and one flag per declared `Option`. An
+   option is declarative (`kind` is `int`, `str`, `choice` with `choices`, or `text`, which
+   becomes `--name` plus `--name-file`); parsed values arrive in `VerbRequest.args` under the
+   option's name. The registry knows nothing about typer.
 3. Add the verb to the verb set of every module that may call it (`application/modules.py`).
 4. Add a gate test with the fakes in `tests/fakes.py` asserting the minted permissions equal
    `permissions_for(Verb.APPROVE)` and nothing more, and update the shipped-verbs line in

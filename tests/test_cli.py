@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -12,13 +13,13 @@ from lktec_bot import __version__
 from lktec_bot.adapters.app_token import AppTokenProvider
 from lktec_bot.adapters.github_http import HttpGitHubApi
 from lktec_bot.application.gate import Gate, VerbOutcome, VerbRequest, VerbResult
-from lktec_bot.application.verbs import handlers
+from lktec_bot.application.verbs import handlers, load_verbs
 from lktec_bot.cli import ConfigError, app, build_gate, token_provider_from_env
 from lktec_bot.domain.permissions import Verb
-from lktec_bot.ports.github_api import GitHubApi
+from lktec_bot.ports.github_api import GitHubApi, PullRequest
 from lktec_bot.ports.token_provider import TokenError
 from lktec_bot.summary import mask_secret
-from tests.fakes import FakeApiFactory, FakeTokenProvider
+from tests.fakes import FakeApiFactory, FakeRepository, FakeTokenProvider
 from tests.test_key_source import PEM
 
 runner = CliRunner()
@@ -41,6 +42,32 @@ def fake_gate(monkeypatch: pytest.MonkeyPatch) -> FakeTokenProvider:
     monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     return tokens
+
+
+@pytest.fixture
+def automerge_gate(monkeypatch: pytest.MonkeyPatch) -> FakeRepository:
+    """``build_gate`` wired to the fakes with the automerge module enabled and PR #7 open."""
+    state = FakeRepository(
+        pull_requests={
+            7: PullRequest(
+                number=7,
+                html_url="https://github.com/acme/widgets/pull/7",
+                state="open",
+                draft=False,
+                head_sha="abc",
+            )
+        }
+    )
+    factory = FakeApiFactory({".github/lktec-bot.yml": AUTOMERGE}, state)
+
+    def fake_build_gate(env: Mapping[str, str] | None = None) -> Gate:
+        return Gate(FakeTokenProvider(), factory, handlers(), mask=mask_secret)
+
+    monkeypatch.setattr("lktec_bot.cli.build_gate", fake_build_gate)
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    return state
 
 
 def write_policy(tmp_path: Path, text: str) -> Path:
@@ -202,6 +229,185 @@ def test_ping_command_rejects_bad_repository(fake_gate: FakeTokenProvider, repos
     assert result.exit_code == 2
     assert "--repository:" in result.output
     assert fake_gate.requests == []
+
+
+# -- verbs with options ------------------------------------------------------------------
+
+
+def test_comment_command_with_inline_body_and_marker(
+    automerge_gate: FakeRepository, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    output = tmp_path / "output.txt"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+
+    result = runner.invoke(
+        app,
+        [
+            "comment",
+            "-R",
+            "acme/widgets",
+            "-m",
+            "automerge",
+            "--target",
+            "pr",
+            "--number",
+            "7",
+            "--body",
+            "hello",
+            "--marker",
+            "e2e",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "ok: commented on #7 with marker 'e2e'" in result.output
+    assert "url: https://github.com/acme/widgets/issues/7#issuecomment-100" in result.output
+    assert automerge_gate.created_comments == [(7, "hello\n\n<!-- lktec-bot:e2e -->\n")]
+    assert output.read_text(encoding="utf-8") == (
+        "result=ok\nmessage=commented on #7 with marker 'e2e'\n"
+        "url=https://github.com/acme/widgets/issues/7#issuecomment-100\n"
+    )
+
+
+def test_comment_command_reads_the_body_from_a_file(
+    automerge_gate: FakeRepository, tmp_path: Path
+) -> None:
+    body = tmp_path / "body.md"
+    body.write_text("from a file\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "comment",
+            "-R",
+            "acme/widgets",
+            "-m",
+            "automerge",
+            "--target",
+            "issue",
+            "--number",
+            "3",
+            "--body-file",
+            str(body),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert automerge_gate.created_comments == [(3, "from a file\n")]
+
+
+def test_comment_command_denied_writes_denied_to_the_outputs(
+    automerge_gate: FakeRepository, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    output = tmp_path / "output.txt"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+
+    result = runner.invoke(
+        app,
+        [
+            "comment",
+            "-R",
+            "acme/widgets",
+            "-m",
+            "ping",
+            "--target",
+            "pr",
+            "--number",
+            "7",
+            "--body",
+            "x",
+        ],
+    )
+
+    assert result.exit_code == 3
+    assert output.read_text(encoding="utf-8").startswith("result=denied\nmessage=module 'ping'")
+    assert output.read_text(encoding="utf-8").endswith("url=\n")
+
+
+@pytest.mark.parametrize(
+    ("extra", "fragment"),
+    [
+        ([], "--body or --body-file is required"),
+        (["--body", "x", "--body-file", "y"], "either --body or --body-file, not both"),
+        (["--body-file", "does-not-exist.md"], "--body-file: cannot read"),
+    ],
+)
+def test_comment_command_body_usage_errors(
+    automerge_gate: FakeRepository, extra: list[str], fragment: str
+) -> None:
+    base = ["comment", "-R", "acme/widgets", "-m", "automerge", "--target", "pr", "--number", "7"]
+
+    result = runner.invoke(app, base + extra)
+
+    assert result.exit_code == 2, result.output
+    assert fragment in result.output
+    assert automerge_gate.created_comments == []
+
+
+def test_comment_command_requires_a_valid_target(automerge_gate: FakeRepository) -> None:
+    base = ["comment", "-R", "acme/widgets", "-m", "automerge", "--number", "7", "--body", "x"]
+
+    assert runner.invoke(app, base).exit_code == 2
+    assert runner.invoke(app, [*base, "--target", "commit"]).exit_code == 2
+    assert automerge_gate.created_comments == []
+
+
+def test_approve_command_without_a_body(automerge_gate: FakeRepository) -> None:
+    result = runner.invoke(app, ["approve", "-R", "acme/widgets", "-m", "automerge", "-n", "7"])
+
+    assert result.exit_code == 2  # no short flag for --number
+    result = runner.invoke(
+        app, ["approve", "-R", "acme/widgets", "-m", "automerge", "--number", "7"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "ok: approved #7 at abc" in result.output
+    assert automerge_gate.reviews_created == [(7, "APPROVE", "")]
+
+
+def test_enable_automerge_command_validates_the_method(automerge_gate: FakeRepository) -> None:
+    base = ["enable-automerge", "-R", "acme/widgets", "-m", "automerge", "--number", "7"]
+
+    assert runner.invoke(app, [*base, "--method", "fast-forward"]).exit_code == 2
+    result = runner.invoke(app, [*base, "--method", "rebase"])
+
+    assert result.exit_code == 0, result.output
+    assert "ok: auto-merge (rebase) enabled on #7" in result.output
+    assert automerge_gate.auto_merge == [(7, "REBASE")]
+
+
+def test_update_branch_command(automerge_gate: FakeRepository) -> None:
+    result = runner.invoke(
+        app, ["update-branch", "-R", "acme/widgets", "-m", "automerge", "--number", "7"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "ok: update of #7 accepted" in result.output
+    assert automerge_gate.branch_updates == [(7, "abc")]
+
+
+def test_verb_error_exits_1(automerge_gate: FakeRepository) -> None:
+    result = runner.invoke(
+        app, ["update-branch", "-R", "acme/widgets", "-m", "automerge", "--number", "404"]
+    )
+
+    assert result.exit_code == 1
+    assert "error: update-branch failed: GET pulls/404 -> 404" in result.output
+
+
+def test_every_option_of_every_verb_is_a_flag() -> None:
+    for spec in load_verbs().values():
+        # Typer colours the help on CI (GITHUB_ACTIONS forces a terminal); drop the escapes.
+        help_text = re.sub(
+            r"\x1b\[[0-9;]*m", "", runner.invoke(app, [spec.verb.value, "--help"]).output
+        )
+        assert "--repository" in help_text
+        assert "--module" in help_text
+        assert ("--target" in help_text) is spec.takes_target
+        for option in spec.options:
+            assert option.flag in help_text
+            if option.kind == "text":
+                assert f"{option.flag}-file" in help_text
 
 
 def test_caller_token_flag_is_gone() -> None:

@@ -72,7 +72,13 @@ _VERB_PERMISSIONS: Mapping[Verb, frozenset[Grant]] = {
     # request body non-empty, which is what makes GitHub narrow the token at all.
     Verb.PING: _grants((Permission.METADATA, "read")),
     Verb.APPROVE: _grants((Permission.PULL_REQUESTS, "write")),
-    Verb.ENABLE_AUTOMERGE: _grants((Permission.PULL_REQUESTS, "write")),
+    # Verified live (lukislp/lktec-bot#4): with pull_requests:write alone GitHub answers the
+    # enablePullRequestAutoMerge mutation with "Resource not accessible by integration";
+    # contents:write is required as well, as for the merge the mutation schedules.
+    Verb.ENABLE_AUTOMERGE: _grants(
+        (Permission.CONTENTS, "write"),
+        (Permission.PULL_REQUESTS, "write"),
+    ),
     Verb.UPDATE_BRANCH: _grants(
         (Permission.CONTENTS, "write"),
         (Permission.PULL_REQUESTS, "write"),
