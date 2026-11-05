@@ -18,6 +18,7 @@ on:
 
 permissions:
   contents: read
+  actions: read # the reusable workflow reads which commit of itself the run uses
 
 jobs:
   automerge:

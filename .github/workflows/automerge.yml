@@ -16,15 +16,6 @@ name: Automerge (reusable)
 # repository at the commit of this very workflow file, to install the bot from.
 on:
   workflow_call:
-    inputs:
-      bot-repository:
-        description: >-
-          The repository that holds this workflow, to install the bot from at the commit the
-          workflow was called at. A reusable workflow cannot read its own repository from the
-          github context, so a fork of lktec-bot sets this to itself. Default: the upstream.
-        type: string
-        required: false
-        default: lukislp/lktec-bot
     secrets:
       app-id:
         description: The GitHub App id (a secret named LKTEC_BOT_APP_ID in the caller).
@@ -36,6 +27,7 @@ on:
 # Everything that writes goes through the App's narrowed tokens, never through GITHUB_TOKEN.
 permissions:
   contents: read
+  actions: read # to read which commit of this workflow the run uses
 
 jobs:
   arm:
@@ -49,6 +41,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+      actions: read
     concurrency:
       group: automerge-arm-${{ github.repository }}-${{ github.event.pull_request.number }}
       cancel-in-progress: false
@@ -67,13 +60,28 @@ jobs:
             pypi.org:443
             raw.githubusercontent.com:443
             release-assets.githubusercontent.com:443
-
       # The bot, at the commit this workflow file was called at. NOT the pull request: this job
       # runs on pull_request_target with secrets and must never see the pull request's code.
+      # A reusable workflow cannot read its own repository or commit from the github context,
+      # but the run lists the workflows it references with their commit.
+      - name: Find the commit this workflow was called at
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          entry="$(gh api "repos/$RUN" --jq '[.referenced_workflows[]? | select(.path | test("/[.]github/workflows/automerge[.]yml@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"')"
+          read -r repository sha <<< "$entry"
+          if [[ ! "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ || ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::could not tell which commit of the automerge workflow this run uses: $entry"
+            exit 1
+          fi
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ inputs.bot-repository }}
-          ref: ${{ github.job_workflow_sha }}
+          repository: ${{ steps.source.outputs.repository }}
+          ref: ${{ steps.source.outputs.sha }}
           path: .lktec-bot
           persist-credentials: false
       - uses: ./.lktec-bot/actions/setup
@@ -95,6 +103,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+      actions: read
     # One sweep at a time per repository; a second one waits for the first.
     concurrency:
       group: automerge-sweep-${{ github.repository }}
@@ -112,11 +121,28 @@ jobs:
             pypi.org:443
             raw.githubusercontent.com:443
             release-assets.githubusercontent.com:443
-
+      # The bot, at the commit this workflow file was called at. NOT the pull request: this job
+      # runs on pull_request_target with secrets and must never see the pull request's code.
+      # A reusable workflow cannot read its own repository or commit from the github context,
+      # but the run lists the workflows it references with their commit.
+      - name: Find the commit this workflow was called at
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          entry="$(gh api "repos/$RUN" --jq '[.referenced_workflows[]? | select(.path | test("/[.]github/workflows/automerge[.]yml@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"')"
+          read -r repository sha <<< "$entry"
+          if [[ ! "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ || ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::could not tell which commit of the automerge workflow this run uses: $entry"
+            exit 1
+          fi
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ inputs.bot-repository }}
-          ref: ${{ github.job_workflow_sha }}
+          repository: ${{ steps.source.outputs.repository }}
+          ref: ${{ steps.source.outputs.sha }}
           path: .lktec-bot
           persist-credentials: false
       - uses: ./.lktec-bot/actions/setup
