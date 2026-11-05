@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -396,7 +397,10 @@ def test_verb_error_exits_1(automerge_gate: FakeRepository) -> None:
 
 def test_every_option_of_every_verb_is_a_flag() -> None:
     for spec in load_verbs().values():
-        help_text = runner.invoke(app, [spec.verb.value, "--help"]).output
+        # Typer colours the help on CI (GITHUB_ACTIONS forces a terminal); drop the escapes.
+        help_text = re.sub(
+            r"\x1b\[[0-9;]*m", "", runner.invoke(app, [spec.verb.value, "--help"]).output
+        )
         assert "--repository" in help_text
         assert "--module" in help_text
         assert ("--target" in help_text) is spec.takes_target

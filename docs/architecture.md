@@ -149,7 +149,7 @@ whole project is reviewed in one place:
 | `ping`             | `metadata:read`                          |
 | `comment`          | `pull_requests:write` or `issues:write`, by target |
 | `approve`          | `pull_requests:write`                    |
-| `enable-automerge` | `pull_requests:write`                    |
+| `enable-automerge` | `contents:write` + `pull_requests:write` |
 | `update-branch`    | `contents:write` + `pull_requests:write` |
 | `commit`           | `contents:write`                         |
 | `open-pr`          | `pull_requests:write`                    |
@@ -179,9 +179,11 @@ footprint to change.
 
 `enable-automerge` is a GraphQL mutation (`enablePullRequestAutoMerge`). The adapter resolves
 the pull request's node id from `owner/repo/number` first; the port never exposes node ids.
-GitHub documents the mutation under the pull-request permission, but it may additionally need
-`contents:write` on some repositories. This must be verified against a real repository when
-the verb ships; if so, the table row and the registration change together.
+GitHub documents the mutation under the pull-request permission, but a token narrowed to
+`pull_requests:write` alone is refused with `Resource not accessible by integration`
+(verified live against `lukislp/lktec-bot#4`); with `contents:write` added the mutation
+succeeds. The table row and the registration carry both, like `update-branch`, which also
+schedules a write to the branch.
 
 ### Why there is no `merge` verb
 

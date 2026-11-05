@@ -21,7 +21,11 @@ METHODS = ("squash", "merge", "rebase")
 
 @register(
     Verb.ENABLE_AUTOMERGE,
-    grants=frozenset({Grant(Permission.PULL_REQUESTS, "write")}),
+    # contents:write as well as pull_requests:write: GitHub refuses the mutation without it
+    # ("Resource not accessible by integration"), verified live against lukislp/lktec-bot#4.
+    grants=frozenset(
+        {Grant(Permission.CONTENTS, "write"), Grant(Permission.PULL_REQUESTS, "write")}
+    ),
     options=(
         NUMBER,
         Option("method", "How to merge once the checks are green.", kind="choice", choices=METHODS),

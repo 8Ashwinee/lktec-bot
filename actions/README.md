@@ -96,7 +96,8 @@ Inputs: `number` (required), `method` (`squash`, default, `merge` or `rebase`). 
 enabled with the same method is `ok`; with another method it is an error. The repository must
 allow auto-merge (*Settings > General > Allow auto-merge*) and the pull request must not be
 mergeable yet (otherwise GitHub answers "clean status" and the verb reports an error).
-Permission: `pull_requests:write`.
+Permission: `contents:write` plus `pull_requests:write` (GitHub refuses the mutation with
+`pull_requests:write` alone; verified live).
 
 ```yaml
 - uses: lukislp/lktec-bot/actions/enable-automerge@<sha> # vX.Y.Z

@@ -21,7 +21,7 @@ What the parameters mean:
 | ---------------------- | ------- | -------------------------------------------------------------- |
 | `webhook_active`       | `false` | The bot runs from workflows; it receives no events.            |
 | `public`               | `false` | Only you can install it.                                       |
-| `contents`             | `write` | `update-branch`, `commit`, `release` need it. Tokens are narrowed per verb; the App's maximum is not what a verb gets. |
+| `contents`             | `write` | `enable-automerge`, `update-branch`, `commit`, `release` need it. Tokens are narrowed per verb; the App's maximum is not what a verb gets. |
 | `pull_requests`        | `write` | `comment`, `approve`, `enable-automerge`, `update-branch`, `open-pr`. |
 
 Add later, when the matching verbs ship and you want them: `issues: write` (`open-issue`,

@@ -9,7 +9,7 @@ from tests.verb_helpers import Harness, pull_request
 
 
 @pytest.mark.parametrize(("method", "graphql"), [("squash", "SQUASH"), ("merge", "MERGE")])
-def test_enable_automerge_runs_the_mutation_with_pull_requests_write(
+def test_enable_automerge_runs_the_mutation_with_contents_and_pull_requests_write(
     method: str, graphql: str
 ) -> None:
     state = FakeRepository(pull_requests={7: pull_request()})
@@ -20,7 +20,8 @@ def test_enable_automerge_runs_the_mutation_with_pull_requests_write(
     assert result.outcome is VerbOutcome.OK
     assert result.message == f"auto-merge ({method}) enabled on #7"
     assert result.url == "https://github.com/acme/widgets/pull/7"
-    assert harness.tokens.requests[1][2] == {"pull_requests": "write"}
+    # contents:write as well: verified live, pull_requests:write alone is refused by GitHub.
+    assert harness.tokens.requests[1][2] == {"contents": "write", "pull_requests": "write"}
     assert state.auto_merge == [(7, graphql)]
 
 
