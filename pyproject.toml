@@ -1,0 +1,93 @@
+[project]
+name = "lktec-bot"
+dynamic = ["version"]
+description = "GitHub App bot core: least-privilege verbs for auto-merge, releases and deployments, opt-in per repository."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.13"
+dependencies = [
+    "httpx>=0.28",
+    "pydantic>=2.11",
+    "pyjwt[crypto]>=2.10",
+    "typer>=0.17",
+    "pyyaml>=6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/lukislp/lktec-bot"
+Documentation = "https://github.com/lukislp/lktec-bot/tree/main/docs"
+Issues = "https://github.com/lukislp/lktec-bot/issues"
+
+[project.scripts]
+lktec-bot = "lktec_bot.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4",
+    "pytest-cov>=6.2",
+    "respx>=0.22",
+    "ruff>=0.13",
+    "mypy>=1.17",
+    "types-PyYAML>=6.0",
+]
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/lktec_bot/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lktec_bot"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "RUF", # ruff-specific rules
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["lktec_bot"]
+
+# B008 (function call in a default value) already exempts typer.Argument/typer.Option for
+# "simple" annotation types (str/int/...) but not e.g. Path - same safe pattern either way
+# (Typer itself calls the factory once per CLI invocation, never reused across calls the
+# way a real mutable-default bug would be), so extend the exemption explicitly instead of
+# a per-call `# noqa`.
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["typer.Argument", "typer.Option"]
+
+[tool.mypy]
+python_version = "3.13"
+files = ["src"]
+strict = true
+warn_unreachable = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra --cov=lktec_bot --cov-report=term-missing"
+
+[tool.coverage.run]
+branch = true
+source = ["lktec_bot"]
+omit = ["src/lktec_bot/_version.py"]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true

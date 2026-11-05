@@ -1,0 +1,28 @@
+name: Dependency review
+
+# Thin caller of the shared implementation in lukislp/ci-workflows - the triggers stay here
+# because a reusable workflow cannot declare them for the caller. Public repositories only:
+# the dependency graph comparison this builds on needs GitHub Advanced Security on a private
+# repo. The check name in the branch ruleset is "review / dependency-review".
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# One run per PR: a newer push cancels the run it supersedes.
+concurrency:
+  group: dependency-review-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    uses: lukislp/ci-workflows/.github/workflows/dependency-review.yml@a239baf9b37018d23af426610b4f26069d18bcba # v1.8.27
+    # pull-requests: write is what the summary comment needs; the called workflow keeps
+    # contents at read. Drop it together with comment-summary-in-pr: never.
+    permissions:
+      contents: read
+      pull-requests: write
+    with:
+      fail-on-severity: high
