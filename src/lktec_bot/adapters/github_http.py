@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import base64
+import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
 
@@ -20,6 +22,7 @@ from lktec_bot.ports.github_api import (
     MergeMethod,
     PullRequest,
     PullRequestCommit,
+    RateLimit,
     Release,
     Review,
     ReviewEvent,
@@ -68,6 +71,8 @@ mutation($pullRequestId: ID!) {
 _COMPARE_PAGE_SIZE = "100"
 _MAX_COMPARE_PAGES = 100
 _MAX_TAG_DEPTH = 5
+# Slack added to the wait for a primary rate limit, so the first retry lands after the reset.
+_RESET_MARGIN_SECONDS = 2.0
 
 _CREATE_COMMIT_ON_BRANCH = """
 mutation($input: CreateCommitOnBranchInput!) {
@@ -92,7 +97,13 @@ class HttpGitHubApi:
     body) is retried for every method, because GitHub rejected the request before acting on
     it; a transport error (connection dropped, timeout) is retried once for idempotent methods.
     A ``Retry-After`` above ``max_backoff_seconds`` fails the call instead of being capped: the
-    job would be waiting for a limit it cannot see. ``sleep`` is injectable so tests do not wait.
+    job would be waiting for a limit it cannot see.
+
+    The primary rate limit (5,000 requests per hour, per installation, shared by every repository
+    the App is installed on) is different: it resets only at ``X-RateLimit-Reset``. When that is
+    within ``max_rate_limit_wait_seconds`` the call logs one line, sleeps once and retries once;
+    otherwise it fails at once with the reset time, because backing off cannot help.
+    ``sleep``, ``clock`` and ``log`` are injectable so tests neither wait nor print.
     """
 
     def __init__(
@@ -104,6 +115,9 @@ class HttpGitHubApi:
         max_attempts: int = 4,
         sleep: Callable[[float], None] = time.sleep,
         max_backoff_seconds: float = 30.0,
+        max_rate_limit_wait_seconds: float = 600.0,
+        clock: Callable[[], float] = time.time,
+        log: Callable[[str], None] | None = None,
     ) -> None:
         self._client = client or httpx.Client(timeout=30.0)
         self._base_url = base_url.rstrip("/")
@@ -111,10 +125,18 @@ class HttpGitHubApi:
         self._max_attempts = max(1, max_attempts)
         self._sleep = sleep
         self._max_backoff = max_backoff_seconds
+        self._max_rate_limit_wait = max_rate_limit_wait_seconds
+        self._clock = clock
+        self._log = log or _log_to_stderr
+        self._last_rate_limit: RateLimit | None = None
 
     @property
     def base_url(self) -> str:
         return self._base_url
+
+    @property
+    def last_rate_limit(self) -> RateLimit | None:
+        return self._last_rate_limit
 
     def close(self) -> None:
         self._client.close()
@@ -490,6 +512,7 @@ class HttpGitHubApi:
     ) -> httpx.Response:
         url = f"{self._base_url}{path}"
         transport_retried = False
+        primary_waited = False
         attempt = 0
         while True:
             attempt += 1
@@ -510,12 +533,35 @@ class HttpGitHubApi:
                 transport_retried = True
                 self._sleep(min(float(2 ** (attempt - 1)), self._max_backoff))
                 continue
+            self._record_rate_limit(response)
             if response.is_success or (allow_404 and response.status_code == 404):
                 return response
             error = f"{method} {path} -> {response.status_code}: {_short_body(response)}"
+            reset = _primary_rate_limit_reset(response)
+            if reset is not None:
+                wait = max(0.0, reset - self._clock() + _RESET_MARGIN_SECONDS)
+                if primary_waited or wait > self._max_rate_limit_wait:
+                    raise GitHubHttpError(
+                        _primary_limit_message(error, reset), status=response.status_code
+                    )
+                self._log(
+                    "primary rate limit exhausted for this installation; "
+                    f"waiting {wait:.0f} s until it resets"
+                )
+                self._sleep(wait)
+                primary_waited = True
+                attempt -= 1  # the one wait-and-retry does not use up a back-off attempt
+                continue
             if not self._retryable(method, response) or attempt >= self._max_attempts:
                 raise GitHubHttpError(error, status=response.status_code)
             self._sleep(self._backoff(response, attempt, error))
+
+    def _record_rate_limit(self, response: httpx.Response) -> None:
+        remaining = response.headers.get("x-ratelimit-remaining", "")
+        if not remaining.isdigit():
+            return
+        reset = response.headers.get("x-ratelimit-reset", "")
+        self._last_rate_limit = RateLimit(int(remaining), int(reset) if reset.isdigit() else None)
 
     @staticmethod
     def _retryable(method: str, response: httpx.Response) -> bool:
@@ -534,6 +580,38 @@ class HttpGitHubApi:
                 )
             return float(retry_after)
         return min(float(2 ** (attempt - 1)), self._max_backoff)
+
+
+def _primary_rate_limit_reset(response: httpx.Response) -> int | None:
+    """The reset time (unix seconds) when the answer is the primary rate limit, else None.
+
+    Primary: 403/429, no Retry-After, a numeric X-RateLimit-Reset, and either the words
+    "API rate limit exceeded" or X-RateLimit-Remaining: 0. The secondary limit's own words keep
+    it on the back-off path.
+    """
+    if response.status_code not in (403, 429) or "retry-after" in response.headers:
+        return None
+    reset = response.headers.get("x-ratelimit-reset", "")
+    if not reset.isdigit():
+        return None
+    text = response.text.lower()
+    if "secondary rate limit" in text:
+        return None
+    if "api rate limit exceeded" in text or response.headers.get("x-ratelimit-remaining") == "0":
+        return int(reset)
+    return None
+
+
+def _primary_limit_message(error: str, reset: int) -> str:
+    when = datetime.fromtimestamp(reset, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return (
+        f"{error}; the primary rate limit is exhausted for this installation (shared by every "
+        f"repository the App is installed on) and resets at {when}; retry the run after that"
+    )
+
+
+def _log_to_stderr(text: str) -> None:
+    print(text, file=sys.stderr)
 
 
 def _is_secondary_rate_limit(response: httpx.Response) -> bool:

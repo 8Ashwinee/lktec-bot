@@ -8,7 +8,13 @@ import pytest
 import respx
 
 from lktec_bot.adapters.github_http import GitHubHttpError, HttpGitHubApi
-from lktec_bot.ports.github_api import BranchUpdate, IssueComment, PullRequest, Review
+from lktec_bot.ports.github_api import (
+    BranchUpdate,
+    IssueComment,
+    PullRequest,
+    RateLimit,
+    Review,
+)
 
 BASE = "https://api.github.test"
 CONTENTS = "/repos/acme/widgets/contents/.github/lktec-bot.yml"
@@ -802,3 +808,207 @@ def test_create_commit_on_branch_reports_a_null_commit(
 
     with pytest.raises(GitHubHttpError, match="createCommitOnBranch"):
         api.create_commit_on_branch("acme", "widgets", "b", "h", "", "a" * 40, {"x": b"1"}, [])
+
+
+# -- primary rate limit ----------------------------------------------------------------------
+
+NOW = 1_700_000_000.0
+PRIMARY_BODY = {"message": "API rate limit exceeded for installation ID 178980993."}
+
+
+def primary_api(
+    sleeps: list[float], logs: list[str], max_rate_limit_wait_seconds: float = 600.0
+) -> HttpGitHubApi:
+    return HttpGitHubApi(
+        "t",
+        base_url=BASE,
+        sleep=sleeps.append,
+        clock=lambda: NOW,
+        log=logs.append,
+        max_attempts=3,
+        max_rate_limit_wait_seconds=max_rate_limit_wait_seconds,
+    )
+
+
+def test_primary_limit_within_the_window_waits_once_and_retries_once(
+    respx_mock: respx.MockRouter,
+) -> None:
+    sleeps: list[float] = []
+    logs: list[str] = []
+    api = primary_api(sleeps, logs)
+    route = respx_mock.get(f"{BASE}/repos/acme/widgets/git/matching-refs/tags/v").mock(
+        side_effect=[
+            httpx.Response(
+                403,
+                headers={"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(int(NOW) + 90)},
+                json=PRIMARY_BODY,
+            ),
+            httpx.Response(200, json=[{"ref": "refs/tags/v1.0.0"}]),
+        ]
+    )
+
+    assert api.list_tags("acme", "widgets", "v") == ["v1.0.0"]
+
+    assert route.call_count == 2
+    assert sleeps == [92.0]
+    assert logs == [
+        "primary rate limit exhausted for this installation; waiting 92 s until it resets"
+    ]
+
+
+def test_primary_limit_is_recognised_by_the_body_alone(respx_mock: respx.MockRouter) -> None:
+    sleeps: list[float] = []
+    api = primary_api(sleeps, [])
+    respx_mock.get(f"{BASE}/x").mock(
+        side_effect=[
+            httpx.Response(
+                429, headers={"x-ratelimit-reset": str(int(NOW) - 5)}, json=PRIMARY_BODY
+            ),
+            httpx.Response(200, json={}),
+        ]
+    )
+
+    api._request("GET", "/x")
+
+    assert sleeps == [0.0]  # a reset in the past never sleeps a negative time
+
+
+def test_primary_limit_beyond_the_window_fails_at_once_with_the_reset_time(
+    respx_mock: respx.MockRouter,
+) -> None:
+    sleeps: list[float] = []
+    logs: list[str] = []
+    api = primary_api(sleeps, logs, max_rate_limit_wait_seconds=600.0)
+    reset = int(NOW) + 3000
+    route = respx_mock.get(f"{BASE}/x").mock(
+        return_value=httpx.Response(
+            403,
+            headers={"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(reset)},
+            json=PRIMARY_BODY,
+        )
+    )
+
+    with pytest.raises(GitHubHttpError) as caught:
+        api._request("GET", "/x")
+
+    message = str(caught.value)
+    assert "primary rate limit is exhausted" in message
+    assert "resets at 2023-11-14T23:03:20Z" in message
+    assert "retry the run after that" in message
+    assert caught.value.status == 403
+    assert route.call_count == 1
+    assert sleeps == []
+    assert logs == []
+
+
+def test_a_second_primary_answer_after_the_wait_is_not_waited_for_again(
+    respx_mock: respx.MockRouter,
+) -> None:
+    sleeps: list[float] = []
+    api = primary_api(sleeps, [])
+    route = respx_mock.get(f"{BASE}/x").mock(
+        return_value=httpx.Response(
+            403, headers={"x-ratelimit-reset": str(int(NOW) + 10)}, json=PRIMARY_BODY
+        )
+    )
+
+    with pytest.raises(GitHubHttpError, match="primary rate limit is exhausted"):
+        api._request("GET", "/x")
+
+    assert route.call_count == 2
+    assert sleeps == [12.0]
+
+
+def test_primary_limit_without_a_reset_header_stays_on_the_back_off_path(
+    respx_mock: respx.MockRouter,
+) -> None:
+    sleeps: list[float] = []
+    api = primary_api(sleeps, [])
+    respx_mock.get(f"{BASE}/x").mock(
+        side_effect=[
+            httpx.Response(403, headers={"x-ratelimit-remaining": "0"}, json=PRIMARY_BODY),
+            httpx.Response(200, json={}),
+        ]
+    )
+
+    api._request("GET", "/x")
+
+    assert sleeps == [1.0]
+
+
+def test_retry_after_or_secondary_words_never_count_as_primary(
+    respx_mock: respx.MockRouter,
+) -> None:
+    sleeps: list[float] = []
+    api = primary_api(sleeps, [])
+    reset = {"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(int(NOW) + 3000)}
+    respx_mock.get(f"{BASE}/x").mock(
+        side_effect=[
+            httpx.Response(403, headers={**reset, "retry-after": "5"}, text="slow down"),
+            httpx.Response(
+                403, headers=reset, json={"message": "You have exceeded a secondary rate limit."}
+            ),
+            httpx.Response(200, json={}),
+        ]
+    )
+
+    api._request("GET", "/x")
+
+    assert sleeps == [5.0, 2.0]
+
+
+def test_last_rate_limit_follows_every_response(respx_mock: respx.MockRouter) -> None:
+    api = primary_api([], [])
+    before = api.last_rate_limit
+    assert before is None
+    respx_mock.get(f"{BASE}/a").mock(
+        return_value=httpx.Response(
+            200, headers={"x-ratelimit-remaining": "4999", "x-ratelimit-reset": "1700003600"}
+        )
+    )
+    respx_mock.get(f"{BASE}/b").mock(
+        return_value=httpx.Response(200, headers={"x-ratelimit-remaining": "4998"})
+    )
+    respx_mock.get(f"{BASE}/c").mock(return_value=httpx.Response(200))
+
+    api._request("GET", "/a")
+    assert api.last_rate_limit == RateLimit(4999, 1_700_003_600)
+    api._request("GET", "/b")
+    assert api.last_rate_limit == RateLimit(4998, None)
+    api._request("GET", "/c")  # no header: the last known budget stays
+    assert api.last_rate_limit == RateLimit(4998, None)
+
+
+def test_the_default_log_writes_one_line_to_stderr(
+    respx_mock: respx.MockRouter, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sleeps: list[float] = []
+    api = HttpGitHubApi("t", base_url=BASE, sleep=sleeps.append, clock=lambda: NOW)
+    respx_mock.get(f"{BASE}/x").mock(
+        side_effect=[
+            httpx.Response(
+                403, headers={"x-ratelimit-reset": str(int(NOW) + 1)}, json=PRIMARY_BODY
+            ),
+            httpx.Response(200, json={}),
+        ]
+    )
+
+    api._request("GET", "/x")
+
+    assert "waiting 3 s until it resets" in capsys.readouterr().err
+
+
+def test_a_plain_403_with_a_reset_header_is_not_a_rate_limit(respx_mock: respx.MockRouter) -> None:
+    sleeps: list[float] = []
+    api = primary_api(sleeps, [])
+    route = respx_mock.get(f"{BASE}/x").mock(
+        return_value=httpx.Response(
+            403, headers={"x-ratelimit-reset": str(int(NOW) + 10)}, json={"message": "Forbidden"}
+        )
+    )
+
+    with pytest.raises(GitHubHttpError, match="403"):
+        api._request("GET", "/x")
+
+    assert route.call_count == 1
+    assert sleeps == []

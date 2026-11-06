@@ -13,6 +13,7 @@ from lktec_bot.application.verbs import REGISTRY, handlers, load_verbs
 from lktec_bot.cli import app, collect_args
 from lktec_bot.domain.permissions import Verb
 from lktec_bot.domain.policy import POLICY_PATH
+from lktec_bot.ports.github_api import RateLimit
 from lktec_bot.summary import mask_secret
 from tests.fakes import FakeApiFactory, FakeRepository, FakeTokenProvider
 from tests.test_lockfiles import BRANCH, ENABLED, HEAD, dependabot_pr, handover
@@ -274,3 +275,14 @@ def test_the_commit_subcommand_reports_a_refused_path_as_an_error(
     assert result.exit_code == 1
     assert "no 'workflows' permission" in result.stdout
     assert wired.state.commits == []
+
+
+def test_lockfiles_commit_appends_the_remaining_rate_limit(
+    wired: Wired, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(FakeApiFactory, "last_rate_limit", RateLimit(77))
+    handed = handover(tmp_path / "handover", {"uv.lock": b"old\n"})
+
+    result = run_commit(handed)
+
+    assert "the pull request head (rate limit remaining: 77)" in result.stdout

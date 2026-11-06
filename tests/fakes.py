@@ -15,6 +15,7 @@ from lktec_bot.ports.github_api import (
     MergeMethod,
     PullRequest,
     PullRequestCommit,
+    RateLimit,
     Release,
     Review,
     ReviewEvent,
@@ -146,6 +147,7 @@ class FakeGitHubApi:
     state: FakeRepository = field(default_factory=FakeRepository)
     calls: list[tuple[str, tuple[Any, ...]]] = field(default_factory=list)
     closed: bool = False
+    last_rate_limit: RateLimit | None = None
 
     def get_file_content(
         self, owner: str, repo: str, path: str, ref: str | None = None
@@ -376,12 +378,17 @@ class FakeGitHubApi:
 class FakeApiFactory:
     """Builds FakeGitHubApi instances bound to a token and remembers every one."""
 
+    # Every client this factory builds reports this budget (a test sets it on the class).
+    last_rate_limit: RateLimit | None = None
+
     def __init__(self, files: Mapping[str, str], state: FakeRepository | None = None) -> None:
         self.files = files
         self.state = state if state is not None else FakeRepository()
         self.created: list[FakeGitHubApi] = []
 
     def __call__(self, token: str) -> FakeGitHubApi:
-        api = FakeGitHubApi(token=token, files=self.files, state=self.state)
+        api = FakeGitHubApi(
+            token=token, files=self.files, state=self.state, last_rate_limit=self.last_rate_limit
+        )
         self.created.append(api)
         return api
