@@ -17,10 +17,10 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ValidationError
 
+from lktec_bot.application.modules.automerge.options import AutomergeOptions as AutomergeOptions
 from lktec_bot.domain.permissions import Verb
 from lktec_bot.domain.policy import (
     POLICY_PATH,
@@ -53,15 +53,6 @@ class ModuleSpec:
 
     def verb_names(self) -> str:
         return ", ".join(sorted(verb.value for verb in self.verbs))
-
-
-class AutomergeOptions(BaseModel):
-    """Options of the ``automerge`` module."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    exclude: list[str] = []
-    majors: Literal["manual", "auto"] = "manual"
 
 
 MODULES: dict[str, ModuleSpec] = {}
@@ -143,6 +134,31 @@ def authorize(
         verb.value,
         f"module {module!r} is enabled in {POLICY_PATH} and may run {verb.value!r}",
     )
+
+
+def authorize_module(
+    policy: Policy | None, module: str, modules: Mapping[str, ModuleSpec] | None = None
+) -> Decision:
+    """Whether ``module`` may run at all, for the reads a module command does itself.
+
+    Same order as :func:`authorize` without a verb: unknown module, missing policy, module not
+    declared, module disabled. Which verbs the module may call is still decided per verb.
+    """
+    registry = MODULES if modules is None else modules
+    if module not in registry:
+        return Decision(
+            False, module, "read", f"module {module!r} is not known (known: {_known(registry)})"
+        )
+    if policy is None:
+        return Decision(False, module, "read", f"{POLICY_PATH} is missing in the repository")
+    config = policy.modules.get(module)
+    if config is None:
+        return Decision(
+            False, module, "read", f"module {module!r} is not declared in {POLICY_PATH}"
+        )
+    if not config.enabled:
+        return Decision(False, module, "read", f"module {module!r} is disabled in {POLICY_PATH}")
+    return Decision(True, module, "read", f"module {module!r} is enabled in {POLICY_PATH}")
 
 
 def _known(registry: Mapping[str, ModuleSpec]) -> str:

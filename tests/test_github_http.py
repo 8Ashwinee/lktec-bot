@@ -556,3 +556,79 @@ def test_default_client_when_none_is_given_and_close() -> None:
     api.close()
     api.close()
     assert api._client.is_closed
+
+
+@respx.mock(base_url=BASE)
+def test_get_pull_request_reads_author_title_body_and_merge_state(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.get("/repos/acme/widgets/pulls/7").respond(
+        200,
+        json={
+            "number": 7,
+            "html_url": "https://github.com/acme/widgets/pull/7",
+            "state": "open",
+            "draft": False,
+            "title": "bump ruff from 0.1.0 to 0.1.1",
+            "body": None,
+            "mergeable_state": "behind",
+            "user": {"login": "dependabot[bot]"},
+            "head": {"sha": "abc"},
+        },
+    )
+
+    pull_request = api.get_pull_request("acme", "widgets", 7)
+
+    assert pull_request.title == "bump ruff from 0.1.0 to 0.1.1"
+    assert pull_request.body == ""
+    assert pull_request.author_login == "dependabot[bot]"
+    assert pull_request.merge_state == "BEHIND"
+
+
+@respx.mock(base_url=BASE)
+def test_list_pull_requests_asks_for_open_ones_oldest_first(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter
+) -> None:
+    entry = {
+        "number": 3,
+        "state": "open",
+        "head": {"sha": "abc"},
+        "user": {"login": "someone"},
+        "auto_merge": {"merge_method": "squash"},
+    }
+    route = respx_mock.get("/repos/acme/widgets/pulls").respond(200, json=[entry])
+
+    pull_requests = api.list_pull_requests("acme", "widgets")
+
+    params = route.calls[0].request.url.params
+    assert (params["state"], params["sort"], params["direction"]) == ("open", "created", "asc")
+    assert [pr.number for pr in pull_requests] == [3]
+    assert pull_requests[0].auto_merge_method == "SQUASH"
+    assert pull_requests[0].merge_state == ""
+
+
+@respx.mock(base_url=BASE)
+def test_list_pull_requests_rejects_an_entry_without_a_head(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.get("/repos/acme/widgets/pulls").respond(200, json=[{"number": 3}])
+
+    with pytest.raises(GitHubHttpError, match="a pull request in the list has no head"):
+        api.list_pull_requests("acme", "widgets")
+
+
+@respx.mock(base_url=BASE)
+def test_list_pull_request_files_includes_the_old_name_of_a_rename(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.get("/repos/acme/widgets/pulls/7/files").respond(
+        200,
+        json=[
+            {"filename": "a.txt"},
+            {"filename": "new.yml", "previous_filename": ".github/workflows/old.yml"},
+        ],
+    )
+
+    paths = api.list_pull_request_files("acme", "widgets", 7)
+
+    assert paths == ["a.txt", "new.yml", ".github/workflows/old.yml"]

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from lktec_bot.ports.github_api import (
@@ -96,6 +96,13 @@ class FakeRepository:
     auto_merge: list[tuple[int, str]] = field(default_factory=list)
     branch_updates: list[tuple[int, str]] = field(default_factory=list)
     next_comment_id: int = 100
+    # Changed files per pull request; what ``list_pull_request_files`` answers.
+    pull_files: dict[int, list[str]] = field(default_factory=dict)
+    # ``merge_state`` answers handed out one per ``get_pull_request`` call before the stored
+    # state applies, to play GitHub's lazily computed UNKNOWN.
+    merge_state_script: dict[int, list[str]] = field(default_factory=dict)
+    # Every write in order (``approve #7``, ``enable-automerge #7``, ...), across all clients.
+    log: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -117,9 +124,25 @@ class FakeGitHubApi:
     def get_pull_request(self, owner: str, repo: str, number: int) -> PullRequest:
         self.calls.append(("get_pull_request", (owner, repo, number)))
         try:
-            return self.state.pull_requests[number]
+            pull_request = self.state.pull_requests[number]
         except KeyError:
             raise RuntimeError(f"GET pulls/{number} -> 404: Not Found") from None
+        script = self.state.merge_state_script.get(number)
+        if script:
+            pull_request = replace(pull_request, merge_state=script.pop(0))
+        return pull_request
+
+    def list_pull_requests(self, owner: str, repo: str) -> list[PullRequest]:
+        self.calls.append(("list_pull_requests", (owner, repo)))
+        return [
+            replace(pull_request, merge_state="")
+            for _, pull_request in sorted(self.state.pull_requests.items())
+            if pull_request.open
+        ]
+
+    def list_pull_request_files(self, owner: str, repo: str, number: int) -> list[str]:
+        self.calls.append(("list_pull_request_files", (owner, repo, number)))
+        return list(self.state.pull_files.get(number, []))
 
     def list_reviews(self, owner: str, repo: str, number: int) -> list[Review]:
         self.calls.append(("list_reviews", (owner, repo, number)))
@@ -130,6 +153,11 @@ class FakeGitHubApi:
     ) -> str:
         self.calls.append(("create_review", (owner, repo, number, event, body)))
         self.state.reviews_created.append((number, event, body))
+        self.state.log.append(f"approve #{number}" if event == "APPROVE" else f"review #{number}")
+        if event == "APPROVE":
+            head = self.state.pull_requests[number].head_sha
+            url = f"https://github.com/{owner}/{repo}/pull/{number}#pullrequestreview-1"
+            self.state.reviews.setdefault(number, []).append(Review(BOT, "APPROVED", head, url))
         return f"https://github.com/{owner}/{repo}/pull/{number}#pullrequestreview-1"
 
     def enable_auto_merge(
@@ -137,6 +165,9 @@ class FakeGitHubApi:
     ) -> str:
         self.calls.append(("enable_auto_merge", (owner, repo, number, merge_method)))
         self.state.auto_merge.append((number, merge_method))
+        self.state.log.append(f"enable-automerge #{number} {merge_method.lower()}")
+        pull_request = self.state.pull_requests[number]
+        self.state.pull_requests[number] = replace(pull_request, auto_merge_method=merge_method)
         return f"https://github.com/{owner}/{repo}/pull/{number}"
 
     def update_branch(
@@ -144,6 +175,7 @@ class FakeGitHubApi:
     ) -> BranchUpdate:
         self.calls.append(("update_branch", (owner, repo, number, expected_head_sha)))
         self.state.branch_updates.append((number, expected_head_sha))
+        self.state.log.append(f"update-branch #{number}")
         return self.state.branch_update
 
     def list_issue_comments(self, owner: str, repo: str, number: int) -> list[IssueComment]:
@@ -153,9 +185,13 @@ class FakeGitHubApi:
     def create_issue_comment(self, owner: str, repo: str, number: int, body: str) -> str:
         self.calls.append(("create_issue_comment", (owner, repo, number, body)))
         self.state.created_comments.append((number, body))
+        self.state.log.append(f"comment #{number}")
         comment_id = self.state.next_comment_id
         self.state.next_comment_id += 1
-        return f"https://github.com/{owner}/{repo}/issues/{number}#issuecomment-{comment_id}"
+        url = f"https://github.com/{owner}/{repo}/issues/{number}#issuecomment-{comment_id}"
+        comment = IssueComment(comment_id, BOT, "Bot", body, url)
+        self.state.comments.setdefault(number, []).append(comment)
+        return url
 
     def update_issue_comment(self, owner: str, repo: str, comment_id: int, body: str) -> str:
         self.calls.append(("update_issue_comment", (owner, repo, comment_id, body)))

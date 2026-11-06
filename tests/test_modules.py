@@ -8,6 +8,7 @@ from lktec_bot.application.modules import (
     AutomergeOptions,
     ModuleSpec,
     authorize,
+    authorize_module,
     policy_problems,
     register_module,
     validate_policy,
@@ -165,3 +166,63 @@ def test_authorize_with_a_custom_registry() -> None:
     assert authorize(policy, "mine", Verb.RELEASE, registry).allowed is True
     assert authorize(policy, "mine", Verb.PING, registry).allowed is False
     assert "known: none" in authorize(policy, "mine", Verb.PING, {}).reason
+
+
+# -- automerge options ------------------------------------------------------------------------
+
+
+def test_automerge_options_defaults() -> None:
+    options = AutomergeOptions.model_validate({})
+
+    assert options.majors == "manual"
+    assert options.exclude == []
+    assert options.workflow_files == "auto"
+    assert options.method == "squash"
+
+
+def test_automerge_options_accept_every_documented_value() -> None:
+    options = AutomergeOptions.model_validate(
+        {"majors": "auto", "exclude": ["a", "B"], "workflow-files": "manual", "method": "rebase"}
+    )
+
+    assert options.majors == "auto"
+    assert options.exclude == ["a", "B"]
+    assert options.workflow_files == "manual"
+    assert options.method == "rebase"
+
+
+def test_workflow_files_is_spelled_with_a_hyphen_only() -> None:
+    spec = MODULES["automerge"]
+
+    assert spec.option_problems({"workflow-files": "manual"}) == []
+    assert spec.option_problems({"workflow_files": "manual"}) == [
+        "workflow_files: Extra inputs are not permitted"
+    ]
+    assert spec.option_problems({"workflow-files": "sometimes"}) == [
+        "workflow-files: Input should be 'auto' or 'manual'"
+    ]
+
+
+def test_method_and_exclude_are_validated() -> None:
+    spec = MODULES["automerge"]
+
+    assert spec.option_problems({"method": "fast-forward"}) == [
+        "method: Input should be 'squash', 'merge' or 'rebase'"
+    ]
+    assert spec.option_problems({"exclude": "pillow"}) == ["exclude: Input should be a valid list"]
+
+
+def test_authorize_module_follows_the_documented_order() -> None:
+    enabled = load_policy(AUTOMERGE)
+
+    assert authorize_module(enabled, "automerge").allowed is True
+    assert "may" not in authorize_module(enabled, "automerge").reason
+    assert "not known" in authorize_module(enabled, "mystery").reason
+    assert "missing" in authorize_module(None, "automerge").reason
+    assert "not declared" in authorize_module(load_policy(PING), "automerge").reason
+    off = load_policy("version: 1\nmodules:\n  automerge: {}\n")
+    assert "disabled" in authorize_module(off, "automerge").reason
+    assert (
+        authorize_module(enabled, "mine", {"mine": ModuleSpec("mine", frozenset())}).allowed
+        is False
+    )

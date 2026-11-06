@@ -21,11 +21,13 @@ src/lktec_bot/
     app_token.py     RS256 App JWT -> installation lookup -> narrowed installation token
     key_source.py    EnvKeySource (LKTEC_BOT_APP_ID / LKTEC_BOT_PRIVATE_KEY[_FILE]), FileKeySource
   application/   the gate, the module registry and the verbs
-    gate.py          Gate.run(VerbRequest) -> VerbResult; owner/repo validation
-    modules.py       module registry: name -> allowed verbs + options model; authorize()
+    gate.py          Gate.run(VerbRequest) -> VerbResult; Gate.read for module reads; owner/repo validation
+    modules/         module registry (__init__.py): name -> allowed verbs + options model; authorize()
+      automerge/     the automerge module: options.py, classify.py (pure), service.py (arm, sweep)
     verbs/           one file per verb: @register(Verb.X, grants=..., options=...) on the handler
       _common.py     --number parsing and the draft/closed refusal shared by the PR verbs
-  cli.py         typer entry point; verb subcommands are built from the verb registry
+  cli.py         typer entry point; verb subcommands are built from the verb registry, module
+                 commands (automerge arm / sweep) are written by hand
   summary.py     markdown to $GITHUB_STEP_SUMMARY, result/message/url to $GITHUB_OUTPUT,
                  ::add-mask:: for minted tokens
   text.py        sanitising and markdown escaping for everything that is printed
@@ -126,7 +128,7 @@ repository enables a module; the registry bounds what an enabled module may do:
 
 | Module      | Verbs                                              | Options                                      |
 | ----------- | -------------------------------------------------- | -------------------------------------------- |
-| `automerge` | `approve`, `enable-automerge`, `update-branch`, `comment` | `exclude: [str]`, `majors: manual \| auto` |
+| `automerge` | `approve`, `enable-automerge`, `update-branch`, `comment` | `majors: manual \| auto`, `exclude: [str]`, `workflow-files: auto \| manual`, `method: squash \| merge \| rebase` (see [modules/automerge.md](modules/automerge.md)) |
 | `ping`      | `ping`                                             | none                                         |
 
 An enabled module cannot run a verb outside its set, no matter what the policy file says.
@@ -136,7 +138,21 @@ options model accepts no options at all. The domain only knows the shape of the 
 is application knowledge, so the domain stays free of module names.
 
 Adding a module is one `register_module(name, verbs, OptionsModel)` call in
-`application/modules.py`.
+`application/modules/__init__.py`; a module with logic of its own gets a package next to it
+(`modules/automerge/`) whose pure parts (options, classification) the registry imports and
+whose service (the part that drives the gate) only the command line imports.
+
+### Module commands and `Gate.read`
+
+A module that decides *what* to do needs to read before it writes (which pull requests exist,
+what they change). It does that through `Gate.read(owner, repo, module, permissions, reader)`:
+the module must be known and enabled in the policy, the reader gets a client bound to a token
+narrowed to exactly `permissions` (`pull_requests: read` for `automerge`; scope-checked and
+revoked like a verb token) plus the validated policy to read its own options, and nothing it
+does may write. Every write is a verb and goes through `Gate.run`, each with its own narrowed
+token, so a module command never holds more than one permission at a time and the permission
+footprint of every write stays the one reviewed in the verb table. A denial of either is the
+same `denied` result and exit code 3.
 
 ## The verb table
 

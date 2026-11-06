@@ -22,6 +22,7 @@ from lktec_bot.adapters.github_http import HttpGitHubApi
 from lktec_bot.adapters.key_source import EnvKeySource
 from lktec_bot.application.gate import Gate, VerbRequest, VerbResult, parse_repository
 from lktec_bot.application.modules import authorize, validate_policy
+from lktec_bot.application.modules.automerge.service import Automerge, Decision
 from lktec_bot.application.verbs import Option, VerbSpec, handlers, load_verbs
 from lktec_bot.domain.permissions import Target, Verb
 from lktec_bot.domain.policy import PolicyError
@@ -53,6 +54,10 @@ app = typer.Typer(
 )
 policy_app = typer.Typer(help="Validate and query a .github/lktec-bot.yml policy file.")
 app.add_typer(policy_app, name="policy")
+automerge_app = typer.Typer(
+    help="The automerge module: arm routine Dependabot pull requests and keep PRs mergeable."
+)
+app.add_typer(automerge_app, name="automerge")
 
 
 class ConfigError(ValueError):
@@ -301,6 +306,97 @@ def _report(request: VerbRequest, result: VerbResult) -> None:
 
 for _spec in load_verbs().values():
     add_verb_command(_spec)
+
+
+# -- module commands ------------------------------------------------------------------------
+# A module command decides what to do and calls verbs through the gate; it is not a verb and
+# holds no token of its own.
+
+REPOSITORY_OPTION = typer.Option("--repository", "-R", help="Target repository as owner/name.")
+
+
+def _open_gate(repository: str) -> tuple[str, str, Gate]:
+    try:
+        owner, repo = parse_repository(repository)
+    except ValueError as exc:
+        say(f"--repository: {exc}", err=True)
+        raise typer.Exit(code=EXIT_USAGE) from None
+    try:
+        return owner, repo, build_gate()
+    except ConfigError as exc:
+        say(str(exc), err=True)
+        raise typer.Exit(code=EXIT_USAGE) from None
+
+
+@automerge_app.command("arm")
+def automerge_arm(
+    number: Annotated[int, typer.Option("--number", help="Pull request number.", min=1)],
+    repository: Annotated[str, REPOSITORY_OPTION],
+) -> None:
+    """Classify a Dependabot pull request; approve it and enable auto-merge when it is routine.
+
+    Never merges and never bypasses a rule: GitHub merges once the required checks are green.
+    """
+    owner, repo, gate = _open_gate(repository)
+    with closing(gate):
+        result = Automerge(gate, owner, repo).arm(number)
+    write_summary(result.to_markdown(f"{owner}/{repo}"))
+    overall = {Decision.DENIED: "denied", Decision.ERROR: "error"}.get(result.decision, "ok")
+    write_outputs(
+        {
+            "result": overall,
+            "decision": result.decision.value,
+            "reason": result.reason,
+            "message": result.reason,
+            "url": result.url,
+        }
+    )
+    say(f"{result.decision.value}: {result.reason}")
+    if result.url:
+        say(f"url: {result.url}")
+    for warning in result.warnings:
+        say(f"warning: {warning}", err=True)
+    if result.exit_code:
+        raise typer.Exit(code=result.exit_code)
+
+
+@automerge_app.command("sweep")
+def automerge_sweep(repository: Annotated[str, REPOSITORY_OPTION]) -> None:
+    """Arm routine Dependabot pull requests, update behind branches, unstick conflicting ones.
+
+    Exit 0 with a summary table (errors on single pull requests are listed, not fatal), 3 when
+    the policy denies the module, 1 when the pull requests could not be read.
+    """
+    owner, repo, gate = _open_gate(repository)
+    with closing(gate):
+        result = Automerge(gate, owner, repo).sweep()
+    write_summary(result.to_markdown(f"{owner}/{repo}"))
+    if result.failure is not None:
+        outcome = result.failure.outcome.value
+        write_outputs({"result": outcome, "message": result.failure.message})
+        say(f"{outcome}: {result.failure.message}")
+    else:
+        message = (
+            f"armed {result.armed}, re-approved {result.approved}, updated {result.updated}, "
+            f"recreate requested {result.recreated}, errors {result.errors}"
+        )
+        write_outputs(
+            {
+                "result": "ok",
+                "message": message,
+                "armed": str(result.armed),
+                "updated": str(result.updated),
+                "recreated": str(result.recreated),
+                "errors": str(result.errors),
+            }
+        )
+        for row in result.rows:
+            say(f"#{row.number} ({row.author}, {row.state or '-'}): {row.detail()}")
+        say(f"ok: {message}")
+    for warning in result.warnings:
+        say(f"warning: {warning}", err=True)
+    if result.exit_code:
+        raise typer.Exit(code=result.exit_code)
 
 
 if __name__ == "__main__":  # pragma: no cover

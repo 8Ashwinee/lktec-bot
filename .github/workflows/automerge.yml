@@ -1,0 +1,154 @@
+name: Automerge (reusable)
+
+# The Dependabot auto-merge behaviour of a repository, run by lktec-bot under a GitHub App
+# identity instead of a personal access token. The caller keeps the triggers (see
+# templates/dependabot-auto-merge.yml); everything below runs with the CALLER's event context.
+#
+# arm:   a Dependabot pull request is classified (patch, minor, digest refresh: routine; major:
+#        a person; see docs/modules/automerge.md); a routine one is approved by the App and gets
+#        auto-merge enabled. The bot never merges: GitHub merges once the required checks are
+#        green, under the repository's own rules.
+# sweep: hourly and on every push to the default branch. Arms routine Dependabot pull requests
+#        that were missed, updates behind branches (auto-merge enabled, or opened by a person),
+#        and asks Dependabot to recreate a conflicting pull request.
+#
+# The pull request's code is never checked out and never executed: the only checkout is this
+# repository at the commit of this very workflow file, to install the bot from.
+on:
+  workflow_call:
+    secrets:
+      app-id:
+        description: The GitHub App id (a secret named LKTEC_BOT_APP_ID in the caller).
+        required: true
+      private-key:
+        description: The App's private key in PEM form (a secret named LKTEC_BOT_PRIVATE_KEY).
+        required: true
+
+# Everything that writes goes through the App's narrowed tokens, never through GITHUB_TOKEN.
+permissions:
+  contents: read
+  actions: read # to read which commit of this workflow the run uses
+
+jobs:
+  arm:
+    # The PR AUTHOR, not github.actor: on a synchronize event the actor is whoever pushed last,
+    # which is the bot itself after an update-branch. The author never changes.
+    if: >-
+      github.event_name == 'pull_request_target'
+      && github.event.action != 'auto_merge_enabled'
+      && github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    concurrency:
+      group: automerge-arm-${{ github.repository }}-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: block
+          # uv talks to PyPI only; the bot to api.github.com; setup-uv reads its version manifest
+          # from raw.githubusercontent.com and downloads uv from the GitHub release.
+          allowed-endpoints: >
+            api.github.com:443
+            files.pythonhosted.org:443
+            github.com:443
+            objects.githubusercontent.com:443
+            pypi.org:443
+            raw.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+      # The bot, at the commit this workflow file was called at. NOT the pull request: this job
+      # runs on pull_request_target with secrets and must never see the pull request's code.
+      # A reusable workflow cannot read its own repository or commit from the github context,
+      # but the run lists the workflows it references with their commit.
+      - name: Find the commit this workflow was called at
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          entry="$(gh api "repos/$RUN" --jq '[.referenced_workflows[]? | select(.path | test("/[.]github/workflows/automerge[.]yml@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"')"
+          read -r repository sha <<< "$entry"
+          if [[ ! "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ || ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::could not tell which commit of the automerge workflow this run uses: $entry"
+            exit 1
+          fi
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.source.outputs.repository }}
+          ref: ${{ steps.source.outputs.sha }}
+          path: .lktec-bot
+          persist-credentials: false
+      - uses: ./.lktec-bot/actions/setup
+      - name: Classify, approve and enable auto-merge
+        env:
+          LKTEC_BOT_APP_ID: ${{ secrets.app-id }}
+          LKTEC_BOT_PRIVATE_KEY: ${{ secrets.private-key }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: lktec-bot automerge arm --repository "$REPOSITORY" --number "$NUMBER"
+
+  sweep:
+    if: >-
+      github.event_name == 'push'
+      || github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'pull_request_target' && github.event.action == 'auto_merge_enabled')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    # One sweep at a time per repository; a second one waits for the first.
+    concurrency:
+      group: automerge-sweep-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            files.pythonhosted.org:443
+            github.com:443
+            objects.githubusercontent.com:443
+            pypi.org:443
+            raw.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+      # The bot, at the commit this workflow file was called at. NOT the pull request: this job
+      # runs on pull_request_target with secrets and must never see the pull request's code.
+      # A reusable workflow cannot read its own repository or commit from the github context,
+      # but the run lists the workflows it references with their commit.
+      - name: Find the commit this workflow was called at
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          entry="$(gh api "repos/$RUN" --jq '[.referenced_workflows[]? | select(.path | test("/[.]github/workflows/automerge[.]yml@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"')"
+          read -r repository sha <<< "$entry"
+          if [[ ! "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ || ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::could not tell which commit of the automerge workflow this run uses: $entry"
+            exit 1
+          fi
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.source.outputs.repository }}
+          ref: ${{ steps.source.outputs.sha }}
+          path: .lktec-bot
+          persist-credentials: false
+      - uses: ./.lktec-bot/actions/setup
+      - name: Arm, update and unstick the open pull requests
+        env:
+          LKTEC_BOT_APP_ID: ${{ secrets.app-id }}
+          LKTEC_BOT_PRIVATE_KEY: ${{ secrets.private-key }}
+          REPOSITORY: ${{ github.repository }}
+        run: lktec-bot automerge sweep --repository "$REPOSITORY"
