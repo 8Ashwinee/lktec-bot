@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   lockfiles:
-    uses: lukislp/lktec-bot/.github/workflows/lockfiles.yml@7135078713cdb76a17fd9b204a39fdba17a346de # 2026-11-06
+    uses: lukislp/lktec-bot/.github/workflows/lockfiles.yml@8664c37b3587615c1c97cc766743731deeb9fd05 # 2026-11-06
     with:
       uv-version: "0.12.24" # the pin of ci.yml
       python-version: "3.13"
