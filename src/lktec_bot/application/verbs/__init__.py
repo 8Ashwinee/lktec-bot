@@ -37,7 +37,9 @@ GrantSpec = frozenset[Grant] | Mapping[Target, frozenset[Grant]]
 
 # ``text`` is a body: the CLI offers both ``--<name>`` (inline) and ``--<name>-file`` (a path).
 # ``multi`` is a string flag that may be repeated; its value is a list of strings.
-OptionKind = Literal["int", "str", "choice", "text", "multi"]
+# ``flag`` is a boolean switch: ``--name`` (off by default), or ``--name/--no-name`` when
+# ``default`` is true. Its value is always a bool.
+OptionKind = Literal["int", "str", "choice", "text", "multi", "flag"]
 
 _OPTION_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
@@ -51,16 +53,22 @@ class Option:
     kind: OptionKind = "str"
     required: bool = False
     choices: tuple[str, ...] = ()
+    # Only for ``flag``: whether the switch is on when the command line does not mention it.
+    default: bool = False
+    # The command line spelling when it differs from the name (``from`` is a Python keyword).
+    cli_flag: str | None = None
 
     def __post_init__(self) -> None:
         if not _OPTION_NAME.match(self.name):
             raise ValueError(f"option name {self.name!r} must be snake_case")
         if (self.kind == "choice") != bool(self.choices):
             raise ValueError(f"option {self.name!r}: choices go with kind='choice' only")
+        if self.default and self.kind != "flag":
+            raise ValueError(f"option {self.name!r}: default goes with kind='flag' only")
 
     @property
     def flag(self) -> str:
-        return "--" + self.name.replace("_", "-")
+        return self.cli_flag or "--" + self.name.replace("_", "-")
 
 
 @dataclass(frozen=True, slots=True)

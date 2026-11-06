@@ -157,6 +157,7 @@ def test_the_commit_verb_declares_its_options() -> None:
 
     assert [(option.name, option.kind) for option in spec.options] == [
         ("branch", "str"),
+        ("from_branch", "str"),
         ("message", "str"),
         ("body", "text"),
         ("add", "multi"),
@@ -214,6 +215,37 @@ def test_the_commit_subcommand_commits_repeated_adds(wired: Wired, tmp_path: Pat
     assert (branch, headline, body, expected) == (BRANCH, "chore: refresh", "content\n", HEAD)
     assert additions == {"uv.lock": b"content\n", "sub/uv.lock": b"content\n"}
     assert deletions == ["gone.lock"]
+
+
+def test_the_commit_subcommand_creates_a_missing_branch_with_from(
+    wired: Wired, tmp_path: Path
+) -> None:
+    lock = tmp_path / "local.lock"
+    lock.write_bytes(b"content\n")
+
+    result = runner.invoke(
+        app,
+        [
+            "commit",
+            "-R",
+            "acme/widgets",
+            "-m",
+            "lockfiles",
+            "--branch",
+            "chore/new",
+            "--from",
+            BRANCH,
+            "--message",
+            "chore: add",
+            "--add",
+            f"uv.lock={lock}",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "new branch from" in result.stdout
+    assert wired.state.created_branches == [("chore/new", HEAD)]
+    assert wired.state.commits[0][0] == "chore/new"
 
 
 def test_the_commit_subcommand_reports_a_refused_path_as_an_error(

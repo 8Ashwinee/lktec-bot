@@ -131,6 +131,50 @@ branch; `message` says `accepted` or `already up to date`. Permission: `contents
     number: ${{ github.event.pull_request.number }}
 ```
 
+## `release`
+
+Inputs: `tag`, `sha` and `name` (required), `body` or `body-file`, `latest` (`true`, default) and
+`prerelease` (`false`, default), `module` (default `release`). Publishes a GitHub release; when
+the tag does not exist GitHub creates it at `sha`. A release that exists with its tag at `sha` is
+`unchanged`; a tag at another commit is an error and is never moved. Outputs besides the common
+ones: `decision` (`created`, `unchanged`, `denied`, `error`) and `tag`. Permission:
+`contents:write`. The module that works out the version is the reusable workflow
+[`release.yml`](../docs/modules/release.md), not an action.
+
+```yaml
+- id: release
+  uses: lukislp/lktec-bot/actions/release@<sha> # vX.Y.Z
+  with:
+    app-id: ${{ vars.LKTEC_BOT_APP_ID }}
+    private-key: ${{ secrets.LKTEC_BOT_PRIVATE_KEY }}
+    tag: v1.2.3
+    sha: ${{ github.sha }}
+    name: v1.2.3
+    body-file: notes.md
+- run: echo "${{ steps.release.outputs.url }}"
+```
+
+## `open-pr`
+
+Inputs: `module` (required: no shipped module may run `open-pr` yet), `head`, `base` and `title`
+(required), `body` or `body-file`, `draft` (`false`, default). Opens a pull request from `head`
+into `base`, or changes the open one to the given title, body (only when given) and draft state,
+where they differ. Outputs besides the common ones: `decision` (`opened`, `updated`, `unchanged`,
+`denied`, `error`) and `number`. Permission: `pull_requests:write`.
+
+```yaml
+- id: pr
+  uses: lukislp/lktec-bot/actions/open-pr@<sha> # vX.Y.Z
+  with:
+    app-id: ${{ vars.LKTEC_BOT_APP_ID }}
+    private-key: ${{ secrets.LKTEC_BOT_PRIVATE_KEY }}
+    module: my-addon
+    head: release/next
+    base: main
+    title: "chore: release"
+    body-file: pr.md
+```
+
 ## Forks
 
 A `pull_request` run from a fork has no secrets, so the verb actions cannot mint a token

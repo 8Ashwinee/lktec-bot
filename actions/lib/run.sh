@@ -40,6 +40,33 @@ case "$verb" in
   update-branch)
     args+=(--number "${INPUT_NUMBER:?number input is required}")
     ;;
+  release)
+    args+=(
+      --tag "${INPUT_TAG:?tag input is required}"
+      --sha "${INPUT_SHA:?sha input is required}"
+      --name "${INPUT_NAME:?name input is required}"
+    )
+    if [ -n "${INPUT_BODY_FILE:-}" ]; then
+      args+=(--body-file "$INPUT_BODY_FILE")
+    elif [ -n "${INPUT_BODY:-}" ]; then
+      args+=(--body "$INPUT_BODY")
+    fi
+    if [ "${INPUT_LATEST:-true}" = "true" ]; then args+=(--latest); else args+=(--no-latest); fi
+    if [ "${INPUT_PRERELEASE:-false}" = "true" ]; then args+=(--prerelease); fi
+    ;;
+  open-pr)
+    args+=(
+      --head "${INPUT_HEAD:?head input is required}"
+      --base "${INPUT_BASE:?base input is required}"
+      --title "${INPUT_TITLE:?title input is required}"
+    )
+    if [ -n "${INPUT_BODY_FILE:-}" ]; then
+      args+=(--body-file "$INPUT_BODY_FILE")
+    elif [ -n "${INPUT_BODY:-}" ]; then
+      args+=(--body "$INPUT_BODY")
+    fi
+    if [ "${INPUT_DRAFT:-false}" = "true" ]; then args+=(--draft); fi
+    ;;
   *)
     echo "::error::unknown verb '$verb'"
     exit 2

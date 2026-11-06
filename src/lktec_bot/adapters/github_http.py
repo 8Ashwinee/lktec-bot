@@ -13,10 +13,13 @@ import httpx
 from lktec_bot.adapters._http_common import DEFAULT_BASE_URL, github_headers
 from lktec_bot.ports.github_api import (
     BranchUpdate,
+    CommitInfo,
+    Comparison,
     CreatedCommit,
     IssueComment,
     MergeMethod,
     PullRequest,
+    Release,
     Review,
     ReviewEvent,
 )
@@ -46,6 +49,24 @@ mutation($pullRequestId: ID!, $mergeMethod: PullRequestMergeMethod!) {
 }
 """
 
+
+_CONVERT_TO_DRAFT = """
+mutation($pullRequestId: ID!) {
+  convertPullRequestToDraft(input: {pullRequestId: $pullRequestId}) { pullRequest { id } }
+}
+"""
+
+_READY_FOR_REVIEW = """
+mutation($pullRequestId: ID!) {
+  markPullRequestReadyForReview(input: {pullRequestId: $pullRequestId}) { pullRequest { id } }
+}
+"""
+
+# The compare endpoint pages at 250 commits; a tag that follows a chain of tag objects is
+# resolved up to this depth (GitHub itself rarely nests more than one).
+_COMPARE_PAGE_SIZE = "250"
+_MAX_COMPARE_PAGES = 40
+_MAX_TAG_DEPTH = 5
 
 _CREATE_COMMIT_ON_BRANCH = """
 mutation($input: CreateCommitOnBranchInput!) {
@@ -236,6 +257,134 @@ class HttpGitHubApi:
             url=_node(data, "createCommitOnBranch", "commit", "url"),
         )
 
+    def create_branch(self, owner: str, repo: str, branch: str, sha: str) -> None:
+        self._request(
+            "POST",
+            f"/repos/{owner}/{repo}/git/refs",
+            json={"ref": f"refs/heads/{branch}", "sha": sha},
+        )
+
+    def get_release_by_tag(self, owner: str, repo: str, tag: str) -> Release | None:
+        response = self._request(
+            "GET", f"/repos/{owner}/{repo}/releases/tags/{quote(tag, safe='')}", allow_404=True
+        )
+        if response.status_code == 404:
+            return None
+        payload = response.json()
+        if not isinstance(payload, dict) or not payload.get("html_url"):
+            raise GitHubHttpError(f"the release for {tag} has no html_url in the API answer")
+        return Release(tag=str(payload.get("tag_name") or tag), html_url=str(payload["html_url"]))
+
+    def get_tag_commit(self, owner: str, repo: str, tag: str) -> str | None:
+        response = self._request(
+            "GET", f"/repos/{owner}/{repo}/git/ref/tags/{quote(tag, safe='/')}", allow_404=True
+        )
+        if response.status_code == 404:
+            return None
+        for _ in range(_MAX_TAG_DEPTH):
+            payload = response.json()
+            target = payload.get("object") if isinstance(payload, dict) else None
+            sha = target.get("sha") if isinstance(target, dict) else None
+            if not isinstance(target, dict) or not isinstance(sha, str) or not sha:
+                raise GitHubHttpError(f"tag {tag} has no object in the API answer")
+            if target.get("type") != "tag":
+                return sha
+            # An annotated tag: the object is the tag object, whose own object is the commit.
+            response = self._request("GET", f"/repos/{owner}/{repo}/git/tags/{sha}")
+        raise GitHubHttpError(f"tag {tag} points through more than {_MAX_TAG_DEPTH} tag objects")
+
+    def create_release(
+        self,
+        owner: str,
+        repo: str,
+        tag: str,
+        sha: str,
+        name: str,
+        body: str,
+        *,
+        latest: bool,
+        prerelease: bool,
+    ) -> str:
+        response = self._request(
+            "POST",
+            f"/repos/{owner}/{repo}/releases",
+            json={
+                "tag_name": tag,
+                "target_commitish": sha,
+                "name": name,
+                "body": body,
+                "draft": False,
+                "prerelease": prerelease,
+                "make_latest": "true" if latest else "false",
+            },
+        )
+        return str(response.json()["html_url"])
+
+    def list_tags(self, owner: str, repo: str, prefix: str) -> list[str]:
+        names: list[str] = []
+        for entry in self._paginate(f"/repos/{owner}/{repo}/git/matching-refs/tags/{prefix}"):
+            ref = str(entry.get("ref", ""))
+            if ref.startswith("refs/tags/"):
+                names.append(ref.removeprefix("refs/tags/"))
+        return names
+
+    def compare_commits(self, owner: str, repo: str, base: str, head: str) -> Comparison:
+        path = f"/repos/{owner}/{repo}/compare/{quote(base, safe='/')}...{head}"
+        commits: list[CommitInfo] = []
+        status = ""
+        total = 0
+        for page in range(1, _MAX_COMPARE_PAGES + 1):
+            payload = self._request(
+                "GET", path, params={"per_page": _COMPARE_PAGE_SIZE, "page": str(page)}
+            ).json()
+            if not isinstance(payload, dict) or not isinstance(payload.get("commits"), list):
+                raise GitHubHttpError(f"GET {path} did not answer with a comparison")
+            if page == 1:
+                status = str(payload.get("status", ""))
+                total = int(payload.get("total_commits", 0))
+            entries = [entry for entry in payload["commits"] if isinstance(entry, dict)]
+            commits.extend(_commit_info(entry) for entry in entries)
+            if not entries or len(commits) >= total:
+                break
+        return Comparison(status=status, total_commits=total, commits=tuple(commits))
+
+    def list_commits(self, owner: str, repo: str, sha: str) -> list[CommitInfo]:
+        entries = self._paginate(f"/repos/{owner}/{repo}/commits", {"sha": sha})
+        return [_commit_info(entry) for entry in entries]
+
+    def find_open_pull_request(
+        self, owner: str, repo: str, head: str, base: str
+    ) -> PullRequest | None:
+        entries = self._paginate(
+            f"/repos/{owner}/{repo}/pulls",
+            {"state": "open", "head": f"{owner}:{head}", "base": base},
+        )
+        return _pull_request(entries[0], 0) if entries else None
+
+    def create_pull_request(
+        self, owner: str, repo: str, head: str, base: str, title: str, body: str, *, draft: bool
+    ) -> PullRequest:
+        response = self._request(
+            "POST",
+            f"/repos/{owner}/{repo}/pulls",
+            json={"title": title, "head": head, "base": base, "body": body, "draft": draft},
+        )
+        return _pull_request(response.json(), 0)
+
+    def update_pull_request(
+        self, owner: str, repo: str, number: int, *, title: str | None, body: str | None
+    ) -> None:
+        changes = {
+            key: value for key, value in (("title", title), ("body", body)) if value is not None
+        }
+        self._request("PATCH", f"/repos/{owner}/{repo}/pulls/{number}", json=changes)
+
+    def set_pull_request_draft(self, owner: str, repo: str, number: int, draft: bool) -> None:
+        # REST cannot toggle the draft state; GraphQL can.
+        lookup = self.graphql(_PULL_REQUEST_ID, {"owner": owner, "name": repo, "number": number})
+        node_id = _node(lookup, "repository", "pullRequest", "id")
+        self.graphql(_CONVERT_TO_DRAFT if draft else _READY_FOR_REVIEW, {"pullRequestId": node_id})
+
     def list_issue_comments(self, owner: str, repo: str, number: int) -> list[IssueComment]:
         return [
             IssueComment(
@@ -414,6 +563,16 @@ def _pull_request(payload: object, number: int) -> PullRequest:
         body=str(payload.get("body") or ""),
         author_login=_login(payload),
         merge_state=str(payload.get("mergeable_state") or "").upper(),
+    )
+
+
+def _commit_info(entry: Mapping[str, Any]) -> CommitInfo:
+    commit = entry.get("commit")
+    message = commit.get("message") if isinstance(commit, dict) else None
+    return CommitInfo(
+        sha=str(entry.get("sha", "")),
+        message=str(message or ""),
+        html_url=str(entry.get("html_url") or ""),
     )
 
 

@@ -87,13 +87,15 @@ class VerbResult:
     """Every run ends in one of these; ``denied`` and ``error`` are results, not exceptions.
 
     ``warnings`` carries what went wrong without changing the outcome, e.g. a token that could
-    not be revoked.
+    not be revoked. ``outputs`` are extra ``$GITHUB_OUTPUT`` keys a verb reports next to
+    ``result``, ``message`` and ``url`` (``decision``, ``tag``, ``number``).
     """
 
     outcome: VerbOutcome
     message: str
     url: str | None = None
     warnings: tuple[str, ...] = ()
+    outputs: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:

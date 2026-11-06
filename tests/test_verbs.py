@@ -41,6 +41,8 @@ def test_the_phase_one_verbs_ship_in_this_release() -> None:
         Verb.ENABLE_AUTOMERGE,
         Verb.UPDATE_BRANCH,
         Verb.COMMIT,
+        Verb.RELEASE,
+        Verb.OPEN_PR,
     }
 
 
@@ -59,6 +61,21 @@ def test_every_shipped_verb_declares_its_options() -> None:
         "method",
     ]
     assert [option.name for option in registry[Verb.UPDATE_BRANCH].options] == ["number"]
+    assert [option.name for option in registry[Verb.RELEASE].options] == [
+        "tag",
+        "sha",
+        "name",
+        "body",
+        "latest",
+        "prerelease",
+    ]
+    assert [option.name for option in registry[Verb.OPEN_PR].options] == [
+        "head",
+        "base",
+        "title",
+        "body",
+        "draft",
+    ]
     assert registry[Verb.COMMENT].takes_target
     assert not registry[Verb.APPROVE].takes_target
 
@@ -72,6 +89,10 @@ def test_option_validates_its_shape() -> None:
         Option("m", "x", kind="str", choices=("a",))
     with pytest.raises(ValueError, match="choices go with kind='choice'"):
         Option("m", "x", kind="choice")
+    assert Option("from_branch", "x", cli_flag="--from").flag == "--from"
+    assert Option("latest", "x", kind="flag", default=True).default is True
+    with pytest.raises(ValueError, match="default goes with kind='flag'"):
+        Option("m", "x", default=True)
 
 
 def test_register_refuses_duplicate_option_names(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -79,7 +100,7 @@ def test_register_refuses_duplicate_option_names(monkeypatch: pytest.MonkeyPatch
     options = (Option("number", "x"), Option("number", "y"))
 
     with pytest.raises(ValueError, match="declares an option twice"):
-        register(Verb.RELEASE, grants=permissions_for(Verb.RELEASE), options=options)(handler)
+        register(Verb.CHECK, grants=permissions_for(Verb.CHECK), options=options)(handler)
 
 
 def test_every_registered_verb_has_one_handler_whose_grants_match_the_table() -> None:
@@ -114,10 +135,8 @@ def test_register_refuses_duplicates() -> None:
 
 def test_register_refuses_grants_that_differ_from_the_table() -> None:
     with pytest.raises(ValueError, match="declares grants pull_requests:write but the table"):
-        register(Verb.RELEASE, grants=frozenset({Grant(Permission.PULL_REQUESTS, "write")}))(
-            handler
-        )
-    assert Verb.RELEASE not in REGISTRY
+        register(Verb.CHECK, grants=frozenset({Grant(Permission.PULL_REQUESTS, "write")}))(handler)
+    assert Verb.CHECK not in REGISTRY
 
 
 def test_register_checks_per_target_grants_for_comment(monkeypatch: pytest.MonkeyPatch) -> None:
