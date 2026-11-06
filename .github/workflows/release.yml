@@ -20,6 +20,10 @@ on:
         description: Work out the version and notes only; create no tag and no release.
         type: boolean
         default: false
+      bot-repository:
+        description: The repository this reusable workflow lives in. Change only in a fork.
+        type: string
+        default: lukislp/lktec-bot
     secrets:
       app-id:
         description: The GitHub App id (a secret named LKTEC_BOT_APP_ID in the caller).
@@ -55,6 +59,11 @@ jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Runs of this workflow queue up per branch. A queued run that a newer one replaces is
+    # cancelled by GitHub, which is fine: the newer push's run releases.
+    concurrency:
+      group: lktec-bot-release-${{ github.repository }}-${{ github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: read
       actions: read
@@ -88,8 +97,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN: ${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BOT_REPOSITORY: ${{ inputs.bot-repository }}
         run: |
-          entry="$(gh api "repos/$RUN" --jq '[.referenced_workflows[]? | select(.path | test("/[.]github/workflows/release[.]yml@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"')"
+          # Only an entry of the bot's own repository counts: a chain that still references the
+          # release.yml of another repository must not make this job run that repository's code.
+          entry="$(gh api "repos/$RUN" | jq -r --arg repo "$BOT_REPOSITORY" '[.referenced_workflows[]? | select(.path | startswith($repo + "/.github/workflows/release.yml@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"')"
           read -r repository sha <<< "$entry"
           if [[ ! "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ || ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::could not tell which commit of the release workflow this run uses: $entry"

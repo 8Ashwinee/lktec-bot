@@ -1,8 +1,8 @@
 """Conventional Commit parsing, release rules and version arithmetic. Pure: no I/O.
 
 Behaves like semantic-release's commit analyzer with the Angular defaults (breaking: major,
-``feat``: minor, ``fix`` and ``perf``: patch, everything else: nothing), plus the policy's own
-rules evaluated first. Only the first line of a message decides the type, scope and subject, so
+``feat``: minor, ``fix``, ``perf`` and ``revert``: patch, everything else: nothing), plus the
+policy's own rules evaluated first. Only the first line of a message decides the type, scope and subject, so
 a squash-merge commit is analysed by its headline like semantic-release does; a ``BREAKING
 CHANGE:`` line anywhere in the message still marks it as breaking.
 """
@@ -88,7 +88,7 @@ def bump_for(commit: ParsedCommit, rules: Iterable[Rule]) -> Bump:
         return Bump.MAJOR
     if commit.type == "feat":
         return Bump.MINOR
-    if commit.type in ("fix", "perf"):
+    if commit.type in ("fix", "perf", "revert"):
         return Bump.PATCH
     return Bump.NONE
 

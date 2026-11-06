@@ -155,6 +155,18 @@ def test_list_tags_strips_refs_and_paginates(
 
 
 @respx.mock(base_url=BASE)
+def test_list_tags_with_an_empty_prefix_has_no_trailing_slash(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.get(f"{REPO}/git/matching-refs/tags").respond(
+        200, json=[{"ref": "refs/tags/1.0.0"}]
+    )
+
+    assert api.list_tags("acme", "widgets", "") == ["1.0.0"]
+    assert route.calls[0].request.url.path == f"{REPO}/git/matching-refs/tags"
+
+
+@respx.mock(base_url=BASE)
 def test_compare_commits_reads_every_page(api: HttpGitHubApi, respx_mock: respx.MockRouter) -> None:
     def entry(index: int) -> dict[str, object]:
         return {
@@ -180,8 +192,36 @@ def test_compare_commits_reads_every_page(api: HttpGitHubApi, respx_mock: respx.
     assert comparison.total_commits == 3
     assert [c.message for c in comparison.commits] == ["feat: 1", "feat: 2", "feat: 3"]
     assert comparison.commits[0] == CommitInfo(f"{1:040x}", "feat: 1", "https://c.test/1")
-    assert route.calls[0].request.url.params["per_page"] == "250"
+    assert route.calls[0].request.url.params["per_page"] == "100"
     assert route.calls[1].request.url.params["page"] == "2"
+
+
+@respx.mock(base_url=BASE)
+def test_compare_commits_drops_commits_an_overlapping_page_repeats(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter
+) -> None:
+    def entry(index: int) -> dict[str, object]:
+        return {"sha": f"{index:040x}", "commit": {"message": f"fix: {index}"}}
+
+    route = respx_mock.get(f"{REPO}/compare/v1...{SHA}").mock(
+        side_effect=[
+            httpx.Response(
+                200, json={"status": "ahead", "total_commits": 3, "commits": [entry(1), entry(2)]}
+            ),
+            # the second page starts with a commit the first one already had
+            httpx.Response(
+                200, json={"status": "ahead", "total_commits": 3, "commits": [entry(2)]}
+            ),
+            httpx.Response(
+                200, json={"status": "ahead", "total_commits": 3, "commits": [entry(3)]}
+            ),
+        ]
+    )
+
+    comparison = api.compare_commits("acme", "widgets", "v1", SHA)
+
+    assert [c.message for c in comparison.commits] == ["fix: 1", "fix: 2", "fix: 3"]
+    assert route.call_count == 3
 
 
 @respx.mock(base_url=BASE)
@@ -214,9 +254,10 @@ def test_compare_commits_gives_up_after_the_page_ceiling(
 
     comparison = api.compare_commits("acme", "widgets", "v1", SHA)
 
+    # the same commit on both pages counts once; the shortfall stays visible to the caller
     assert route.call_count == 2
     assert comparison.total_commits == 9999
-    assert len(comparison.commits) == 2
+    assert len(comparison.commits) == 1
 
 
 @respx.mock(base_url=BASE)

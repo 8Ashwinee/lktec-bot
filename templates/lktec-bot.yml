@@ -39,7 +39,7 @@ modules:
     branch: main
     # The version when no tag matches tag-format yet.
     first-version: "1.0.0"
-    # Evaluated in order before the defaults (breaking: major, feat: minor, fix and perf: patch,
+    # Evaluated in order before the defaults (breaking: major, feat: minor, fix, perf and revert: patch,
     # anything else: nothing); the first rule that matches a commit decides. type, scope and
     # breaking are conditions, release is major | minor | patch | none. Example, the rules many
     # repositories carry in .releaserc.json:

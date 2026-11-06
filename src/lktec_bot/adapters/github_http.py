@@ -62,10 +62,10 @@ mutation($pullRequestId: ID!) {
 }
 """
 
-# The compare endpoint pages at 250 commits; a tag that follows a chain of tag objects is
-# resolved up to this depth (GitHub itself rarely nests more than one).
-_COMPARE_PAGE_SIZE = "250"
-_MAX_COMPARE_PAGES = 40
+# The compare endpoint serves at most 100 commits per page. A tag that follows a chain of tag
+# objects is resolved up to _MAX_TAG_DEPTH (GitHub itself rarely nests more than one).
+_COMPARE_PAGE_SIZE = "100"
+_MAX_COMPARE_PAGES = 100
 _MAX_TAG_DEPTH = 5
 
 _CREATE_COMMIT_ON_BRANCH = """
@@ -322,7 +322,9 @@ class HttpGitHubApi:
 
     def list_tags(self, owner: str, repo: str, prefix: str) -> list[str]:
         names: list[str] = []
-        for entry in self._paginate(f"/repos/{owner}/{repo}/git/matching-refs/tags/{prefix}"):
+        # No trailing slash for an empty prefix: ``matching-refs/tags/`` is not the same route.
+        path = f"/repos/{owner}/{repo}/git/matching-refs/tags"
+        for entry in self._paginate(f"{path}/{prefix}" if prefix else path):
             ref = str(entry.get("ref", ""))
             if ref.startswith("refs/tags/"):
                 names.append(ref.removeprefix("refs/tags/"))
@@ -330,7 +332,9 @@ class HttpGitHubApi:
 
     def compare_commits(self, owner: str, repo: str, base: str, head: str) -> Comparison:
         path = f"/repos/{owner}/{repo}/compare/{quote(base, safe='/')}...{head}"
-        commits: list[CommitInfo] = []
+        # By sha, in order: a page that overlaps the previous one must not count a commit twice
+        # and end the loop before the list is complete.
+        commits: dict[str, CommitInfo] = {}
         status = ""
         total = 0
         for page in range(1, _MAX_COMPARE_PAGES + 1):
@@ -343,10 +347,12 @@ class HttpGitHubApi:
                 status = str(payload.get("status", ""))
                 total = int(payload.get("total_commits", 0))
             entries = [entry for entry in payload["commits"] if isinstance(entry, dict)]
-            commits.extend(_commit_info(entry) for entry in entries)
+            for entry in entries:
+                info = _commit_info(entry)
+                commits.setdefault(info.sha, info)
             if not entries or len(commits) >= total:
                 break
-        return Comparison(status=status, total_commits=total, commits=tuple(commits))
+        return Comparison(status=status, total_commits=total, commits=tuple(commits.values()))
 
     def list_commits(self, owner: str, repo: str, sha: str) -> list[CommitInfo]:
         entries = self._paginate(f"/repos/{owner}/{repo}/commits", {"sha": sha})

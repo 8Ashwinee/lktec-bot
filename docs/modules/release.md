@@ -32,7 +32,7 @@ planned; the policy file is rejected when it asks for it.
    strict `X.Y.Z` (no leading zeros, no prerelease, no build metadata); everything else is
    ignored. The highest version wins. `compare/<tag>...<head>` must say `ahead` or `identical`;
    `diverged` or `behind` is an error (the history does not contain the last release). The
-   commits come from that comparison, page by page (`per_page=250`); when GitHub reports more
+   commits come from that comparison, page by page (`per_page=100`, the compare maximum, de-duplicated by sha); when GitHub reports more
    commits than could be read the run fails instead of releasing from a partial list.
    With no matching tag at all, every commit of the branch up to the head counts and the first
    release has the version `first-version`.
@@ -58,7 +58,9 @@ Outputs (`$GITHUB_OUTPUT`) and exit codes are the same for the real run and the 
 | `reason`   | one line saying why; `message` carries the same text                                    |
 
 Exit codes: 0 for `released`, `would-release`, `none` and `skipped`, 1 for `error`, 3 for
-`denied`. A summary line is written to the job summary.
+`denied`. A summary line is written to the job summary. A denied run therefore fails the job of
+the reusable workflow, unlike the composite actions, which succeed with `result=denied` unless
+`fail-on-denied` is set.
 
 ### Commits
 
@@ -77,7 +79,7 @@ The bump of a commit is the **first** rule of `rules` whose conditions all match
 | ------------------------- | ----- |
 | breaking                  | major |
 | `feat`                    | minor |
-| `fix`, `perf`             | patch |
+| `fix`, `perf`, `revert`   | patch |
 | anything else             | none  |
 
 `release: none` in a rule stops the search: the commit contributes nothing, whatever the
@@ -103,7 +105,8 @@ tree) and carries the date (UTC). A commit is listed when its type has a heading
 `revert: Reverts`) or when it moves the version through a rule; the latter without a heading go
 under "Other changes". Each `BREAKING CHANGE` note, or the subject of a commit marked with `!`
 only, is listed under `BREAKING CHANGES`. The text is a pure function of the commits: the same
-input gives the same notes.
+input gives the same notes. The notes carry the commit subjects as written, like semantic-release
+did (no markdown escaping), so an `@mention` in a commit subject is a mention in the release.
 
 ### `lktec-bot release --repository owner/name --module release --tag T --sha SHA --name TITLE`
 
@@ -168,7 +171,8 @@ modules:
 
 Differences worth knowing: several matching `releaseRules` give semantic-release the **highest**
 release, here the **first** matching rule decides (put the specific rules first); `scope` and
-`type` match exactly, no globs; `revert` has no default bump; a `1.0.0` first release is
+`type` match exactly, no globs; `revert` is a patch by default, as in semantic-release's Angular
+rules; a `1.0.0` first release is
 `first-version`, not a prompt.
 
 ### Why the race retry is gone
@@ -220,6 +224,17 @@ The first call replaces the `get-version` job; the last one replaces the
 (`skipped`) when the branch moved on in the meantime, exactly like the "behind the remote" guard
 of today; the next push's chain releases then. Because the version comes from the same commits,
 the tag the last job creates is the one the image was built for.
+
+Runs of the release workflow queue up per branch (`concurrency` group
+`lktec-bot-release-<repository>-<ref>`, nothing is cancelled while it runs). A queued run that a
+newer one replaces is cancelled by GitHub, which is fine: the newer push's run releases. Without
+this, two pushes close together could let the older run create its tag after the newer run had
+already released.
+
+The workflow finds the commit it was called at among the workflows the run references, and only
+trusts an entry of the repository in its `bot-repository` input (default `lukislp/lktec-bot`;
+change it only in a fork). A chain that still references another repository's `release.yml` is
+therefore never mistaken for this one.
 
 ## Permissions
 

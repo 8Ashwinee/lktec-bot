@@ -15,6 +15,9 @@ name: Release
 #   - the old caller of the release workflow of ci-workflows (the file this one replaces)
 #   - .releaserc.json (its rules move to modules.release.rules in .github/lktec-bot.yml)
 #
+# Runs of the workflow queue up per branch; a queued run that a newer push replaces is
+# cancelled by GitHub, which is fine because the newer push's run releases.
+#
 # Replace <sha> with a commit of lukislp/lktec-bot (a release tag's commit once there is one)
 # and the date with the day you pinned it. Like every other reference it stays pinned by SHA.
 # If the default branch is not main, change the trigger and set `branch` in the policy.
