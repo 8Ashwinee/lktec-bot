@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import base64
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
 from lktec_bot.adapters._http_common import DEFAULT_BASE_URL, github_headers
 from lktec_bot.ports.github_api import (
     BranchUpdate,
+    CreatedCommit,
     IssueComment,
     MergeMethod,
     PullRequest,
@@ -41,6 +43,13 @@ mutation($pullRequestId: ID!, $mergeMethod: PullRequestMergeMethod!) {
   enablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId, mergeMethod: $mergeMethod}) {
     pullRequest { url }
   }
+}
+"""
+
+
+_CREATE_COMMIT_ON_BRANCH = """
+mutation($input: CreateCommitOnBranchInput!) {
+  createCommitOnBranch(input: $input) { commit { oid url } }
 }
 """
 
@@ -173,6 +182,59 @@ class HttpGitHubApi:
                 return BranchUpdate.UP_TO_DATE
             raise
         return BranchUpdate.ACCEPTED
+
+    def get_branch_head(self, owner: str, repo: str, branch: str) -> str | None:
+        response = self._request(
+            "GET",
+            f"/repos/{owner}/{repo}/git/ref/heads/{quote(branch, safe='/')}",
+            allow_404=True,
+        )
+        if response.status_code == 404:
+            return None
+        payload = response.json()
+        target = payload.get("object") if isinstance(payload, dict) else None
+        sha = target.get("sha") if isinstance(target, dict) else None
+        if not isinstance(sha, str) or not sha:
+            raise GitHubHttpError(f"branch {branch} has no commit in the API answer")
+        return sha
+
+    def create_commit_on_branch(
+        self,
+        owner: str,
+        repo: str,
+        branch: str,
+        headline: str,
+        body: str,
+        expected_head_oid: str,
+        additions: Mapping[str, bytes],
+        deletions: Sequence[str],
+    ) -> CreatedCommit:
+        message: dict[str, str] = {"headline": headline}
+        if body:
+            message["body"] = body
+        changes: dict[str, list[dict[str, str]]] = {}
+        if additions:
+            changes["additions"] = [
+                {"path": path, "contents": base64.b64encode(content).decode("ascii")}
+                for path, content in additions.items()
+            ]
+        if deletions:
+            changes["deletions"] = [{"path": path} for path in deletions]
+        data = self.graphql(
+            _CREATE_COMMIT_ON_BRANCH,
+            {
+                "input": {
+                    "branch": {"repositoryNameWithOwner": f"{owner}/{repo}", "branchName": branch},
+                    "message": message,
+                    "expectedHeadOid": expected_head_oid,
+                    "fileChanges": changes,
+                }
+            },
+        )
+        return CreatedCommit(
+            oid=_node(data, "createCommitOnBranch", "commit", "oid"),
+            url=_node(data, "createCommitOnBranch", "commit", "url"),
+        )
 
     def list_issue_comments(self, owner: str, repo: str, number: int) -> list[IssueComment]:
         return [
@@ -338,7 +400,10 @@ def _pull_request(payload: object, number: int) -> PullRequest:
     method: MergeMethod | None = None
     if isinstance(auto_merge, dict):
         method = _merge_method(auto_merge.get("merge_method"))
+    head_repo = payload["head"].get("repo")
     return PullRequest(
+        head_ref=str(payload["head"].get("ref") or ""),
+        head_repo=str(head_repo.get("full_name") or "") if isinstance(head_repo, dict) else "",
         number=int(payload.get("number", number)),
         html_url=str(payload.get("html_url", "")),
         state=str(payload.get("state", "")),

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
 from lktec_bot.ports.github_api import (
     BranchUpdate,
+    CreatedCommit,
     IssueComment,
     MergeMethod,
     PullRequest,
@@ -103,6 +104,15 @@ class FakeRepository:
     merge_state_script: dict[int, list[str]] = field(default_factory=dict)
     # Every write in order (``approve #7``, ``enable-automerge #7``, ...), across all clients.
     log: list[str] = field(default_factory=list)
+    # File text at a given ref: ``(ref, path) -> text``; what ``get_file_content`` answers with
+    # a ``ref`` (without one it serves the factory's ``files``).
+    ref_files: dict[tuple[str, str], str] = field(default_factory=dict)
+    # Branch name -> head commit id; what ``get_branch_head`` answers.
+    branches: dict[str, str] = field(default_factory=dict)
+    # Every commit made: (branch, headline, body, expected_head_oid, additions, deletions).
+    commits: list[tuple[str, str, str, str, dict[str, bytes], list[str]]] = field(
+        default_factory=list
+    )
 
 
 @dataclass
@@ -119,6 +129,8 @@ class FakeGitHubApi:
         self, owner: str, repo: str, path: str, ref: str | None = None
     ) -> str | None:
         self.calls.append(("get_file_content", (owner, repo, path, ref)))
+        if ref is not None:
+            return self.state.ref_files.get((ref, path))
         return self.files.get(path)
 
     def get_pull_request(self, owner: str, repo: str, number: int) -> PullRequest:
@@ -177,6 +189,32 @@ class FakeGitHubApi:
         self.state.branch_updates.append((number, expected_head_sha))
         self.state.log.append(f"update-branch #{number}")
         return self.state.branch_update
+
+    def get_branch_head(self, owner: str, repo: str, branch: str) -> str | None:
+        self.calls.append(("get_branch_head", (owner, repo, branch)))
+        return self.state.branches.get(branch)
+
+    def create_commit_on_branch(
+        self,
+        owner: str,
+        repo: str,
+        branch: str,
+        headline: str,
+        body: str,
+        expected_head_oid: str,
+        additions: Mapping[str, bytes],
+        deletions: Sequence[str],
+    ) -> CreatedCommit:
+        self.calls.append(
+            ("create_commit_on_branch", (owner, repo, branch, headline, expected_head_oid))
+        )
+        self.state.commits.append(
+            (branch, headline, body, expected_head_oid, dict(additions), list(deletions))
+        )
+        self.state.log.append(f"commit {branch}")
+        oid = f"{len(self.state.commits):040x}"
+        self.state.branches[branch] = oid
+        return CreatedCommit(oid, f"https://github.com/{owner}/{repo}/commit/{oid}")
 
     def list_issue_comments(self, owner: str, repo: str, number: int) -> list[IssueComment]:
         self.calls.append(("list_issue_comments", (owner, repo, number)))

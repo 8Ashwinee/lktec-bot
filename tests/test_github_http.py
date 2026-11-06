@@ -632,3 +632,147 @@ def test_list_pull_request_files_includes_the_old_name_of_a_rename(
     paths = api.list_pull_request_files("acme", "widgets", 7)
 
     assert paths == ["a.txt", "new.yml", ".github/workflows/old.yml"]
+
+
+@respx.mock(base_url=BASE)
+def test_get_pull_request_reads_the_head_branch_and_repository(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter
+) -> None:
+    payload = {
+        "number": 7,
+        "state": "open",
+        "head": {"sha": "abc", "ref": "dependabot/uv/x", "repo": {"full_name": "acme/widgets"}},
+    }
+    respx_mock.get("/repos/acme/widgets/pulls/7").respond(200, json=payload)
+    respx_mock.get("/repos/acme/widgets/pulls/8").respond(
+        200, json={**payload, "number": 8, "head": {"sha": "abc", "repo": None}}
+    )
+
+    kept = api.get_pull_request("acme", "widgets", 7)
+    gone = api.get_pull_request("acme", "widgets", 8)
+
+    assert (kept.head_ref, kept.head_repo) == ("dependabot/uv/x", "acme/widgets")
+    assert (gone.head_ref, gone.head_repo) == ("", "")
+
+
+@respx.mock(base_url=BASE)
+def test_get_branch_head_reads_the_ref_with_slashes_in_the_name(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.get("/repos/acme/widgets/git/ref/heads/dependabot/uv/x%20y").respond(
+        200, json={"object": {"sha": "abc123"}}
+    )
+
+    assert api.get_branch_head("acme", "widgets", "dependabot/uv/x y") == "abc123"
+    assert route.called
+
+
+@respx.mock(base_url=BASE)
+def test_get_branch_head_is_none_for_a_missing_branch(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.get("/repos/acme/widgets/git/ref/heads/gone").respond(404)
+
+    assert api.get_branch_head("acme", "widgets", "gone") is None
+
+
+@pytest.mark.parametrize("payload", [{}, {"object": {}}, {"object": {"sha": ""}}, []])
+@respx.mock(base_url=BASE)
+def test_get_branch_head_rejects_an_answer_without_a_commit(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter, payload: object
+) -> None:
+    respx_mock.get("/repos/acme/widgets/git/ref/heads/odd").respond(200, json=payload)
+
+    with pytest.raises(GitHubHttpError, match="no commit"):
+        api.get_branch_head("acme", "widgets", "odd")
+
+
+COMMIT_RESPONSE = {
+    "data": {
+        "createCommitOnBranch": {
+            "commit": {"oid": "c0ffee", "url": "https://github.com/acme/widgets/commit/c0ffee"}
+        }
+    }
+}
+
+
+@respx.mock(base_url=BASE)
+def test_create_commit_on_branch_sends_the_input_with_base64_contents(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.post("/graphql").respond(200, json=COMMIT_RESPONSE)
+
+    created = api.create_commit_on_branch(
+        "acme",
+        "widgets",
+        "dependabot/uv/x",
+        "chore: refresh",
+        "details",
+        "a" * 40,
+        {"uv.lock": b"v1\n\xc3\xa4", "sub/p.lock": b""},
+        ["old.lock"],
+    )
+
+    assert (created.oid, created.url) == ("c0ffee", "https://github.com/acme/widgets/commit/c0ffee")
+    sent = json.loads(route.calls[0].request.content)
+    assert "createCommitOnBranch(input: $input)" in sent["query"]
+    assert sent["variables"]["input"] == {
+        "branch": {"repositoryNameWithOwner": "acme/widgets", "branchName": "dependabot/uv/x"},
+        "message": {"headline": "chore: refresh", "body": "details"},
+        "expectedHeadOid": "a" * 40,
+        "fileChanges": {
+            "additions": [
+                {"path": "uv.lock", "contents": base64.b64encode(b"v1\n\xc3\xa4").decode()},
+                {"path": "sub/p.lock", "contents": ""},
+            ],
+            "deletions": [{"path": "old.lock"}],
+        },
+    }
+
+
+@respx.mock(base_url=BASE)
+def test_create_commit_on_branch_omits_empty_parts(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.post("/graphql").respond(200, json=COMMIT_RESPONSE)
+
+    api.create_commit_on_branch("acme", "widgets", "b", "h", "", "a" * 40, {}, ["x"])
+
+    sent = json.loads(route.calls[0].request.content)["variables"]["input"]
+    assert sent["message"] == {"headline": "h"}
+    assert sent["fileChanges"] == {"deletions": [{"path": "x"}]}
+
+
+@respx.mock(base_url=BASE)
+def test_create_commit_on_branch_fails_when_the_branch_moved(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.post("/graphql").respond(
+        200, json={"errors": [{"message": "Expected branch to point to abc but it did not"}]}
+    )
+
+    with pytest.raises(GitHubHttpError, match="Expected branch to point to"):
+        api.create_commit_on_branch("acme", "widgets", "b", "h", "", "a" * 40, {"x": b"1"}, [])
+
+
+@respx.mock(base_url=BASE)
+def test_create_commit_on_branch_is_not_retried_on_5xx(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter, sleeps: list[float]
+) -> None:
+    route = respx_mock.post("/graphql").respond(502)
+
+    with pytest.raises(GitHubHttpError):
+        api.create_commit_on_branch("acme", "widgets", "b", "h", "", "a" * 40, {"x": b"1"}, [])
+
+    assert route.call_count == 1
+    assert sleeps == []
+
+
+@respx.mock(base_url=BASE)
+def test_create_commit_on_branch_reports_a_null_commit(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.post("/graphql").respond(200, json={"data": {"createCommitOnBranch": None}})
+
+    with pytest.raises(GitHubHttpError, match="createCommitOnBranch"):
+        api.create_commit_on_branch("acme", "widgets", "b", "h", "", "a" * 40, {"x": b"1"}, [])

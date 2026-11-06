@@ -11,8 +11,9 @@ src/lktec_bot/
   domain/        pure models and decisions - no I/O, no environment, no GitHub
     policy.py        shape of .github/lktec-bot.yml (version, modules, enabled), Decision
     permissions.py   Verb, Permission, the canonical verb -> permission table
+    paths.py         which repository paths the bot may write (no absolute, no .., no workflows)
   ports/         protocols the application layer talks to
-    github_api.py    GitHubApi (get_file_content, create_review, enable_auto_merge, ..., close)
+    github_api.py    GitHubApi (get_file_content, create_review, enable_auto_merge, create_commit_on_branch, ..., close)
     token_provider.py TokenProvider.token_for(owner, repo, permissions) -> Token, TokenError
     key_source.py    KeySource.load() -> AppCredentials (app id + private key PEM)
   adapters/      implementations of the ports
@@ -24,6 +25,7 @@ src/lktec_bot/
     gate.py          Gate.run(VerbRequest) -> VerbResult; Gate.read for module reads; owner/repo validation
     modules/         module registry (__init__.py): name -> allowed verbs + options model; authorize()
       automerge/     the automerge module: options.py, classify.py (pure), service.py (arm, sweep)
+      lockfiles/     the lockfiles module: options.py, ecosystems.py (pure), service.py (commit)
     verbs/           one file per verb: @register(Verb.X, grants=..., options=...) on the handler
       _common.py     --number parsing and the draft/closed refusal shared by the PR verbs
   cli.py         typer entry point; verb subcommands are built from the verb registry, module
@@ -129,6 +131,7 @@ repository enables a module; the registry bounds what an enabled module may do:
 | Module      | Verbs                                              | Options                                      |
 | ----------- | -------------------------------------------------- | -------------------------------------------- |
 | `automerge` | `approve`, `enable-automerge`, `update-branch`, `comment` | `majors: manual \| auto`, `exclude: [str]`, `workflow-files: auto \| manual`, `method: squash \| merge \| rebase` (see [modules/automerge.md](modules/automerge.md)) |
+| `lockfiles` | `commit`, `comment`                                | `ecosystems: [uv \| dotnet]`, `paths: [str]`, `commit-message: str` (see [modules/lockfiles.md](modules/lockfiles.md)) |
 | `ping`      | `ping`                                             | none                                         |
 
 An enabled module cannot run a verb outside its set, no matter what the policy file says.
@@ -147,7 +150,7 @@ whose service (the part that drives the gate) only the command line imports.
 A module that decides *what* to do needs to read before it writes (which pull requests exist,
 what they change). It does that through `Gate.read(owner, repo, module, permissions, reader)`:
 the module must be known and enabled in the policy, the reader gets a client bound to a token
-narrowed to exactly `permissions` (`pull_requests: read` for `automerge`; scope-checked and
+narrowed to exactly `permissions` (`pull_requests: read` for `automerge`, plus `contents: read` for `lockfiles`; scope-checked and
 revoked like a verb token) plus the validated policy to read its own options, and nothing it
 does may write. Every write is a verb and goes through `Gate.run`, each with its own narrowed
 token, so a module command never holds more than one permission at a time and the permission
@@ -174,7 +177,7 @@ whole project is reviewed in one place:
 | `open-issue`       | `issues:write`                           |
 | `deployment`       | `deployments:write`                      |
 
-The phase-1 verbs ship: `ping`, `comment`, `approve`, `enable-automerge` and `update-branch`.
+The shipped verbs are `ping`, `comment`, `approve`, `enable-automerge`, `update-branch` and `commit`.
 `tests/test_verbs.py` pins the set of shipped verbs; adding one updates that line on purpose.
 
 | Verb               | Options                                   | Behaviour                                                                 |
@@ -184,6 +187,7 @@ The phase-1 verbs ship: `ping`, `comment`, `approve`, `enable-automerge` and `up
 | `approve`          | `--number N [--body\|--body-file]`        | `APPROVE` review; refuses drafts and closed PRs (`error`); no second review for a head the bot already approved |
 | `enable-automerge` | `--number N --method squash\|merge\|rebase` | GraphQL `enablePullRequestAutoMerge`; refuses drafts and closed PRs; already enabled with the same method is `ok`, with another method an `error` |
 | `update-branch`    | `--number N`                              | `PUT .../update-branch` with the current head sha; 202 is `ok`, GitHub's 422 "no new commits" is `ok` with a message, anything else an `error` |
+| `commit`           | `--branch B --message HEADLINE [--body\|--body-file] [--add PATH=FILE]... [--delete PATH]... [--expected-head OID]` | GraphQL `createCommitOnBranch`: one commit that GitHub signs (verified; author is the App's bot, committer is GitHub); the branch must exist; `expectedHeadOid` is `--expected-head` or the head resolved right before, so a concurrent push fails the mutation instead of being overwritten; refuses absolute paths, `..`, `.git` and everything under `.github/workflows/` (the App has no `workflows` permission) |
 
 Every result carries the relevant URL (comment, review or pull request). Nothing a verb
 prints or stores contains a token.
@@ -192,6 +196,13 @@ Verb handlers declare their grants next to the code (`@register(Verb.X, grants=.
 `register` refuses a handler whose grants differ from the table. The table is the source of
 truth; the declaration on the handler is the reviewable copy. Both have to change for a verb's
 footprint to change.
+
+`commit` is the GraphQL mutation `createCommitOnBranch`. GitHub creates the commit itself, so it is
+signed by GitHub with no signing key and no personal access token, and needs `contents:write`
+only. The adapter base64-encodes the added files; the path rules live in `domain/paths.py` and
+are shared with the `lockfiles` module, which checks everything a job that ran a pull request's
+code hands over against them. The mutation is a POST and is never retried after a 5xx: the first
+attempt may have created the commit.
 
 `enable-automerge` is a GraphQL mutation (`enablePullRequestAutoMerge`). The adapter resolves
 the pull request's node id from `owner/repo/number` first; the port never exposes node ids.

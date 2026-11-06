@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pydantic import BaseModel, ValidationError
 
 from lktec_bot.application.modules.automerge.options import AutomergeOptions as AutomergeOptions
+from lktec_bot.application.modules.lockfiles.options import LockfilesOptions as LockfilesOptions
 from lktec_bot.domain.permissions import Verb
 from lktec_bot.domain.policy import (
     POLICY_PATH,
@@ -76,6 +77,7 @@ register_module(
     {Verb.APPROVE, Verb.ENABLE_AUTOMERGE, Verb.UPDATE_BRANCH, Verb.COMMENT},
     AutomergeOptions,
 )
+register_module("lockfiles", {Verb.COMMIT, Verb.COMMENT}, LockfilesOptions)
 # ``ping`` exercises the whole gate end to end; it is a module of its own so that no module that
 # does real work has to be allowed to run it.
 register_module("ping", {Verb.PING})

@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict
 from lktec_bot.application.modules import (
     MODULES,
     AutomergeOptions,
+    LockfilesOptions,
     ModuleSpec,
     authorize,
     authorize_module,
@@ -21,7 +22,9 @@ PING = "version: 1\nmodules:\n  ping:\n    enabled: true\n"
 
 
 def test_registry_declares_the_shipped_modules() -> None:
-    assert set(MODULES) == {"automerge", "ping"}
+    assert set(MODULES) == {"automerge", "lockfiles", "ping"}
+    assert MODULES["lockfiles"].verbs == {Verb.COMMIT, Verb.COMMENT}
+    assert MODULES["lockfiles"].options is LockfilesOptions
     assert MODULES["automerge"].verbs == {
         Verb.APPROVE,
         Verb.ENABLE_AUTOMERGE,
@@ -81,7 +84,9 @@ def test_validate_policy_rejects_an_unknown_module() -> None:
     with pytest.raises(PolicyError) as excinfo:
         validate_policy(PING + "  mystery:\n    enabled: true\n")
 
-    assert excinfo.value.reasons == ["modules.mystery: unknown module (known: automerge, ping)"]
+    assert excinfo.value.reasons == [
+        "modules.mystery: unknown module (known: automerge, lockfiles, ping)"
+    ]
 
 
 def test_validate_policy_rejects_bad_options_with_the_module_in_the_path() -> None:
@@ -113,7 +118,9 @@ def test_authorize_denies_an_unknown_module_with_or_without_a_policy() -> None:
         decision = authorize(policy, "mystery", Verb.PING)
 
         assert decision.allowed is False
-        assert decision.reason == "module 'mystery' is not known (known: automerge, ping)"
+        assert (
+            decision.reason == "module 'mystery' is not known (known: automerge, lockfiles, ping)"
+        )
         assert decision.module == "mystery"
         assert decision.verb == "ping"
 

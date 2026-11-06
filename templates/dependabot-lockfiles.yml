@@ -1,0 +1,34 @@
+name: Dependabot lock files
+
+# Thin caller of the lockfiles workflow of lktec-bot. The triggers stay here because a reusable
+# workflow cannot declare them for the caller. Put this file at
+# .github/workflows/dependabot-lockfiles.yml and read docs/modules/lockfiles.md of lktec-bot
+# first: the module must be enabled in .github/lktec-bot.yml on the default branch and the App
+# must be installed on the repository.
+#
+# pull_request_target on purpose: the App id and key are ordinary Actions secrets, which a
+# pull_request run triggered by Dependabot does not see. The workflow takes care that the pull
+# request's code only ever runs in a job without a secret.
+#
+# Replace <sha> with a commit of lukislp/lktec-bot (a release tag's commit once there is one)
+# and the date with the day you pinned it. Like every other reference it stays pinned by SHA.
+# Set only the tools the repository uses: dotnet-version for NuGet packages.lock.json files,
+# uv-version (matching the CI pin) for uv.lock.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  actions: read # the reusable workflow reads which commit of itself the run uses
+
+jobs:
+  lockfiles:
+    uses: lukislp/lktec-bot/.github/workflows/lockfiles.yml@<sha> # 2026-11-05
+    with:
+      dotnet-version: "10.0.x"
+      # uv-version: "0.12.24"
+      # python-version: "3.12"
+    secrets:
+      app-id: ${{ secrets.LKTEC_BOT_APP_ID }}
+      private-key: ${{ secrets.LKTEC_BOT_PRIVATE_KEY }}

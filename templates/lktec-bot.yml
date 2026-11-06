@@ -13,3 +13,15 @@ modules:
     # Dependency names (exact, case-insensitive) that are never approved or armed. A grouped
     # pull request is skipped as a whole when any member is listed.
     exclude: []
+
+  # Commits the lock files that the lockfiles workflow regenerated for a Dependabot pull request
+  # (see docs/modules/lockfiles.md). Omit this block when the repository does not use it.
+  lockfiles:
+    enabled: true
+    # Default (empty): every supported ecosystem. Supported: uv (uv.lock), dotnet
+    # (packages.lock.json).
+    ecosystems: []
+    # Default (empty): the whole repository. A file or a directory below the repository root.
+    paths: []
+    # One line; {number} is the pull request number.
+    commit-message: "chore(deps): refresh lockfiles after Dependabot bump"

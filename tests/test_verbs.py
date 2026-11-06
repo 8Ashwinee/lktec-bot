@@ -40,6 +40,7 @@ def test_the_phase_one_verbs_ship_in_this_release() -> None:
         Verb.APPROVE,
         Verb.ENABLE_AUTOMERGE,
         Verb.UPDATE_BRANCH,
+        Verb.COMMIT,
     }
 
 

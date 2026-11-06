@@ -23,6 +23,7 @@ from lktec_bot.adapters.key_source import EnvKeySource
 from lktec_bot.application.gate import Gate, VerbRequest, VerbResult, parse_repository
 from lktec_bot.application.modules import authorize, validate_policy
 from lktec_bot.application.modules.automerge.service import Automerge, Decision
+from lktec_bot.application.modules.lockfiles.service import Lockfiles
 from lktec_bot.application.verbs import Option, VerbSpec, handlers, load_verbs
 from lktec_bot.domain.permissions import Target, Verb
 from lktec_bot.domain.policy import PolicyError
@@ -58,6 +59,10 @@ automerge_app = typer.Typer(
     help="The automerge module: arm routine Dependabot pull requests and keep PRs mergeable."
 )
 app.add_typer(automerge_app, name="automerge")
+lockfiles_app = typer.Typer(
+    help="The lockfiles module: commit regenerated lock files onto a Dependabot pull request."
+)
+app.add_typer(lockfiles_app, name="lockfiles")
 
 
 class ConfigError(ValueError):
@@ -179,6 +184,14 @@ def _parameters_for(option: Option) -> list[Any]:
                 None,
             ),
         ]
+    if option.kind == "multi":
+        return [
+            _parameter(
+                option.name,
+                Annotated[list[str] | None, typer.Option(option.flag, help=option.help)],
+                None,
+            )
+        ]
     python_type: Any
     if option.kind == "int":
         python_type = int
@@ -221,7 +234,10 @@ def collect_args(spec: VerbSpec, values: Mapping[str, object]) -> dict[str, obje
                 raise UsageError(f"{option.flag} or {option.flag}-file is required")
             continue
         value = values.get(option.name)
-        if value is not None:
+        if option.kind == "multi":
+            if value:
+                args[option.name] = list(value) if isinstance(value, list | tuple) else [value]
+        elif value is not None:
             args[option.name] = value
     return args
 
@@ -397,6 +413,52 @@ def automerge_sweep(repository: Annotated[str, REPOSITORY_OPTION]) -> None:
         say(f"warning: {warning}", err=True)
     if result.exit_code:
         raise typer.Exit(code=result.exit_code)
+
+
+@lockfiles_app.command("commit")
+def lockfiles_commit(
+    number: Annotated[int, typer.Option("--number", help="Pull request number.", min=1)],
+    changed_dir: Annotated[
+        Path,
+        typer.Option(
+            "--changed-dir",
+            help="Directory with manifest.txt and files/<repo-path> from the regenerating job.",
+            exists=True,
+            file_okay=False,
+        ),
+    ],
+    repository: Annotated[str, REPOSITORY_OPTION],
+    head_sha: Annotated[
+        str | None,
+        typer.Option("--head-sha", help="The head the lock files were regenerated for."),
+    ] = None,
+) -> None:
+    """Commit the regenerated lock files that differ from a Dependabot pull request's head.
+
+    Only for open, non-draft pull requests by dependabot[bot]; only lock files with a known
+    name. The commit is made by the commit verb and signed by GitHub. Exit 0 also when there is
+    nothing to commit, 3 when the policy denies, 1 on an error (or a refused handover).
+    """
+    owner, repo, gate = _open_gate(repository)
+    with closing(gate):
+        outcome = Lockfiles(gate, owner, repo).commit(number, changed_dir, head_sha)
+    write_summary(outcome.to_markdown(f"{owner}/{repo}"))
+    write_outputs(
+        {
+            "result": outcome.result,
+            "decision": outcome.decision.value,
+            "reason": outcome.reason,
+            "message": outcome.reason,
+            "url": outcome.url,
+        }
+    )
+    say(f"{outcome.decision.value}: {outcome.reason}")
+    if outcome.url:
+        say(f"url: {outcome.url}")
+    for warning in outcome.warnings:
+        say(f"warning: {warning}", err=True)
+    if outcome.exit_code:
+        raise typer.Exit(code=outcome.exit_code)
 
 
 if __name__ == "__main__":  # pragma: no cover

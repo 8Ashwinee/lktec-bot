@@ -13,6 +13,7 @@ from lktec_bot.ports.github_api import PullRequest
 from tests.fakes import FakeApiFactory, FakeRepository, FakeTokenProvider
 
 AUTOMERGE = "version: 1\nmodules:\n  automerge:\n    enabled: true\n"
+LOCKFILES = "version: 1\nmodules:\n  lockfiles:\n    enabled: true\n"
 HEAD = "0123456789abcdef0123456789abcdef01234567"
 
 
@@ -32,10 +33,15 @@ def pull_request(
 class Harness:
     """A gate plus the fake state behind it, for one verb."""
 
-    def __init__(self, state: FakeRepository | None = None, actor: str | None = "fake-app[bot]"):
+    def __init__(
+        self,
+        state: FakeRepository | None = None,
+        actor: str | None = "fake-app[bot]",
+        policy: str = AUTOMERGE,
+    ):
         self.state = state if state is not None else FakeRepository()
         self.tokens = FakeTokenProvider(actor=actor)
-        self.factory = FakeApiFactory({POLICY_PATH: AUTOMERGE}, self.state)
+        self.factory = FakeApiFactory({POLICY_PATH: policy}, self.state)
         self.gate = Gate(self.tokens, self.factory, handlers())
 
     def run(
