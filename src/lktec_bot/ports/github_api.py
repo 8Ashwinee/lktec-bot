@@ -40,6 +40,15 @@ class PullRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class PullRequestCommit:
+    """One commit of a pull request and GitHub's verdict on its signature."""
+
+    sha: str
+    verified: bool
+    reason: str  # GitHub's ``verification.reason``: ``valid``, ``unsigned``, ``unknown``, ...
+
+
+@dataclass(frozen=True, slots=True)
 class Review:
     """One submitted pull request review."""
 
@@ -127,6 +136,12 @@ class GitHubApi(Protocol):
 
     def list_pull_request_files(self, owner: str, repo: str, number: int) -> Sequence[str]:
         """The paths pull request ``number`` changes (a renamed file contributes both paths)."""
+        ...
+
+    def list_pull_request_commits(
+        self, owner: str, repo: str, number: int
+    ) -> Sequence[PullRequestCommit]:
+        """The commits of pull request ``number`` with their signature verification."""
         ...
 
     def list_reviews(self, owner: str, repo: str, number: int) -> Sequence[Review]:

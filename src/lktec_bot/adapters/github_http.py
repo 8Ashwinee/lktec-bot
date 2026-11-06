@@ -19,6 +19,7 @@ from lktec_bot.ports.github_api import (
     IssueComment,
     MergeMethod,
     PullRequest,
+    PullRequestCommit,
     Release,
     Review,
     ReviewEvent,
@@ -156,6 +157,24 @@ class HttpGitHubApi:
             if entry.get("previous_filename"):
                 paths.append(str(entry["previous_filename"]))
         return paths
+
+    def list_pull_request_commits(
+        self, owner: str, repo: str, number: int
+    ) -> list[PullRequestCommit]:
+        commits: list[PullRequestCommit] = []
+        for entry in self._paginate(f"/repos/{owner}/{repo}/pulls/{number}/commits"):
+            commit = entry.get("commit")
+            verification = commit.get("verification") if isinstance(commit, dict) else None
+            if not isinstance(verification, dict):
+                verification = {}
+            commits.append(
+                PullRequestCommit(
+                    sha=str(entry.get("sha", "")),
+                    verified=verification.get("verified") is True,
+                    reason=str(verification.get("reason", "unknown")),
+                )
+            )
+        return commits
 
     def list_reviews(self, owner: str, repo: str, number: int) -> list[Review]:
         return [

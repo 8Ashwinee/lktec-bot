@@ -10,7 +10,7 @@ from lktec_bot.application.gate import Gate
 from lktec_bot.application.modules.automerge.service import Automerge, Decision
 from lktec_bot.application.verbs import handlers
 from lktec_bot.domain.policy import POLICY_PATH
-from lktec_bot.ports.github_api import PullRequest, Review
+from lktec_bot.ports.github_api import PullRequest, PullRequestCommit, Review
 from tests.fakes import BOT, FakeApiFactory, FakeRepository, FakeTokenProvider
 
 DEPENDABOT = "dependabot[bot]"
@@ -433,6 +433,88 @@ def test_sweep_asks_dependabot_to_recreate_a_conflicting_pull_request_once_per_h
     assert first.recreated == 1
     assert again.recreated == 1  # reported as done, but it is the same comment
     assert env.state.log == ["comment #1"]
+
+
+UNSIGNED = [PullRequestCommit("a" * 40, False, "unsigned")]
+
+
+@pytest.mark.parametrize("auto", [True, False])
+def test_sweep_asks_dependabot_to_recreate_a_pull_request_with_an_unsigned_commit(
+    auto: bool,
+) -> None:
+    env = setup(pr(1, auto=auto, merge_state="BEHIND"))
+    env.state.pull_commits[1] = [PullRequestCommit("b" * 40, True, "valid"), *UNSIGNED]
+
+    first = env.service.sweep()
+    again = env.service.sweep()
+
+    assert env.state.created_comments == [
+        (1, "@dependabot recreate\n\n<!-- lktec-bot:automerge-recreate-0123456789ab -->\n")
+    ]
+    assert env.state.log == ["comment #1"]  # no arm, approve or update-branch next to it
+    assert (first.armed, first.approved, first.updated, first.recreated) == (0, 0, 0, 1)
+    assert again.recreated == 1  # reported as done, but it is the same comment
+    assert first.rows[0].actions == [
+        "has an unsigned commit (unsigned), asked Dependabot to recreate"
+    ]
+    assert len(env.calls("list_pull_request_commits")) == 2
+
+
+def test_sweep_asks_again_for_an_unsigned_commit_on_a_new_head() -> None:
+    env = setup(pr(1, auto=True))
+    env.state.pull_commits[1] = UNSIGNED
+    env.service.sweep()
+    env.state.pull_requests[1] = replace(env.state.pull_requests[1], head_sha="e" * 40)
+
+    env.service.sweep()
+
+    assert len(env.state.created_comments) == 2
+
+
+def test_sweep_leaves_signed_commits_alone() -> None:
+    env = setup(pr(1, auto=True))
+    env.state.pull_commits[1] = [PullRequestCommit("b" * 40, True, "valid")]
+
+    result = env.service.sweep()
+
+    assert env.state.log == ["approve #1"]
+    assert result.recreated == 0
+    assert len(env.calls("list_pull_request_commits")) == 1
+
+
+def test_sweep_does_not_read_commits_of_pull_requests_it_leaves_alone_or_that_conflict() -> None:
+    env = setup(
+        pr(1, title=MAJOR),  # left for a person
+        pr(2, auto=True, merge_state="DIRTY"),  # recreated for the conflict anyway
+        pr(3, author="someone", title="Fix"),  # not Dependabot
+    )
+    env.state.pull_commits.update({1: UNSIGNED, 2: UNSIGNED, 3: UNSIGNED})
+
+    env.service.sweep()
+
+    assert env.calls("list_pull_request_commits") == []
+    assert env.state.log == ["comment #2"]
+
+
+def test_sweep_never_touches_an_unsigned_commit_of_a_person() -> None:
+    env = setup(pr(1, author="someone", title="Fix", auto=True))
+    env.state.pull_commits[1] = UNSIGNED
+
+    result = env.service.sweep()
+
+    assert env.state.log == []
+    assert result.recreated == 0
+
+
+def test_sweep_lists_a_failed_recreate_of_an_unsigned_commit_in_the_row() -> None:
+    tokens = FakeTokenProvider(permissions_by_mint={2: BROAD})
+    env = setup(pr(1, auto=True), tokens=tokens)
+    env.state.pull_commits[1] = UNSIGNED
+
+    result = env.service.sweep()
+
+    assert result.errors == 1
+    assert result.rows[0].errors[0].startswith("comment:")
 
 
 def test_sweep_asks_again_when_the_head_changed_and_it_still_conflicts() -> None:
