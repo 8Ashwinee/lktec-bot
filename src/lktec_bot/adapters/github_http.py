@@ -71,6 +71,8 @@ mutation($pullRequestId: ID!) {
 _COMPARE_PAGE_SIZE = "100"
 _MAX_COMPARE_PAGES = 100
 _MAX_TAG_DEPTH = 5
+# A paginated list endpoint is walked at most this far (10,000 entries at _PAGE_SIZE).
+_MAX_PAGES = 100
 # Slack added to the wait for a primary rate limit, so the first retry lands after the reset.
 _RESET_MARGIN_SECONDS = 2.0
 
@@ -365,8 +367,16 @@ class HttpGitHubApi:
         names: list[str] = []
         # No trailing slash for an empty prefix: ``matching-refs/tags/`` is not the same route.
         path = f"/repos/{owner}/{repo}/git/matching-refs/tags"
-        for entry in self._paginate(f"{path}/{prefix}" if prefix else path):
-            ref = str(entry.get("ref", ""))
+        # ``matching-refs`` answers with every matching ref in one response and ignores
+        # ``per_page``/``page``, so it is read once: paging it would repeat the same list until
+        # the installation's rate limit is exhausted (2026-11-06, every repository with more
+        # than 100 tags).
+        response = self._request("GET", f"{path}/{prefix}" if prefix else path)
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise GitHubHttpError(f"GET {path} did not answer with a list")
+        for entry in payload:
+            ref = str(entry.get("ref", "")) if isinstance(entry, dict) else ""
             if ref.startswith("refs/tags/"):
                 names.append(ref.removeprefix("refs/tags/"))
         return names
@@ -484,10 +494,15 @@ class HttpGitHubApi:
     # -- transport -------------------------------------------------------------------------
 
     def _paginate(self, path: str, params: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
-        """Every entry of a list endpoint, page by page, until a page is short."""
+        """Every entry of a list endpoint, page by page, until a page is short.
+
+        An endpoint that ignores ``page`` would answer every page alike; such a page is
+        recognised (same first entry as the page before) and the walk stops, and no walk goes
+        beyond ``_MAX_PAGES``: an unbounded loop would spend the installation's whole rate limit.
+        """
         entries: list[dict[str, Any]] = []
-        page = 1
-        while True:
+        previous_first: object = None
+        for page in range(1, _MAX_PAGES + 1):
             response = self._request(
                 "GET",
                 path,
@@ -496,10 +511,15 @@ class HttpGitHubApi:
             payload = response.json()
             if not isinstance(payload, list):
                 raise GitHubHttpError(f"GET {path} did not answer with a list")
+            if page > 1 and payload and payload[0] == previous_first:
+                raise GitHubHttpError(
+                    f"GET {path} answers every page with the same entries; it does not paginate"
+                )
+            previous_first = payload[0] if payload else None
             entries.extend(entry for entry in payload if isinstance(entry, dict))
             if len(payload) < int(_PAGE_SIZE):
                 return entries
-            page += 1
+        raise GitHubHttpError(f"GET {path} has more than {_MAX_PAGES} pages; refusing to walk on")
 
     def _request(
         self,

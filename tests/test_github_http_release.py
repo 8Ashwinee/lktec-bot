@@ -137,21 +137,31 @@ def test_create_release_is_not_retried_after_a_server_error(
 
 
 @respx.mock(base_url=BASE)
-def test_list_tags_strips_refs_and_paginates(
+def test_list_tags_reads_every_matching_ref_in_one_request(
     api: HttpGitHubApi, respx_mock: respx.MockRouter
 ) -> None:
-    first = [{"ref": f"refs/tags/v1.{i}.0"} for i in range(100)]
-    second = [{"ref": "refs/tags/v2.0.0"}, {"ref": "refs/heads/odd"}, {"nope": 1}]
-    route = respx_mock.get(f"{REPO}/git/matching-refs/tags/v").mock(
-        side_effect=[httpx.Response(200, json=first), httpx.Response(200, json=second)]
-    )
+    # matching-refs answers with the whole list and ignores per_page/page: 139 entries, one call.
+    refs: list[object] = [{"ref": f"refs/tags/v1.{i}.0"} for i in range(138)]
+    refs += [{"ref": "refs/tags/v2.0.0"}, {"ref": "refs/heads/odd"}, {"nope": 1}, "junk"]
+    route = respx_mock.get(f"{REPO}/git/matching-refs/tags/v").respond(200, json=refs)
 
     tags = api.list_tags("acme", "widgets", "v")
 
-    assert len(tags) == 101
+    assert len(tags) == 139
     assert tags[0] == "v1.0.0"
     assert tags[-1] == "v2.0.0"
-    assert route.calls[1].request.url.params["page"] == "2"
+    assert route.call_count == 1
+    assert "page" not in route.calls[0].request.url.params
+
+
+@respx.mock(base_url=BASE)
+def test_list_tags_rejects_a_non_list_answer(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.get(f"{REPO}/git/matching-refs/tags/v").respond(200, json={"ref": "x"})
+
+    with pytest.raises(GitHubHttpError, match="did not answer with a list"):
+        api.list_tags("acme", "widgets", "v")
 
 
 @respx.mock(base_url=BASE)
