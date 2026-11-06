@@ -1,0 +1,24 @@
+name: Release
+
+# This repository's own release through its release module (docs/modules/release.md,
+# "Dogfooding"): every push to main that carries a feat or fix commit becomes a tag vX.Y.Z and a
+# GitHub release, which is what callers pin. The triggers stay here because a reusable workflow
+# cannot declare them for the caller; release.yml next to this file is the reusable workflow.
+#
+# The pin below is a commit of main; move it by hand when a change to the reusable workflow or
+# to the module should take effect here (the bot is installed from the pinned commit).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read # the reusable workflow reads which commit of itself the run uses
+
+jobs:
+  release:
+    uses: lukislp/lktec-bot/.github/workflows/release.yml@8664c37b3587615c1c97cc766743731deeb9fd05 # 2026-11-06
+    secrets:
+      app-id: ${{ secrets.LKTEC_BOT_APP_ID }}
+      private-key: ${{ secrets.LKTEC_BOT_PRIVATE_KEY }}

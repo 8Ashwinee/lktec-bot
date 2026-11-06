@@ -275,8 +275,17 @@ gate.
 7. **Keep the tag ruleset as it is.** It forbids deleting and moving tags, which is what the
    bot relies on; it does not forbid creating them.
 
-The first pilot is `lukislp/mowdeck-hacs`. This repository does not release itself yet (no tags
-exist here and the first one is made by hand), so there is no dogfood caller.
+The first pilot is `lukislp/mowdeck-hacs`.
+
+## Dogfooding
+
+This repository releases itself with the module
+([`.github/workflows/self-release.yml`](../../.github/workflows/self-release.yml), policy block in
+[`.github/lktec-bot.yml`](../../.github/lktec-bot.yml)): every push to `main` that carries a
+`feat` or `fix` commit becomes a tag `vX.Y.Z` and a GitHub release, which is what callers pin.
+The line starts at 0.1.0 (`first-version`) while the modules are being rolled out. The `uses:`
+line pins a commit of `main`, like the other dogfood callers; move it by hand when a change to
+the reusable workflow or to the module should take effect here.
 
 ## What mode `pr` will add
 
