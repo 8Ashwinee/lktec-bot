@@ -91,6 +91,67 @@ def test_commit_needs_an_existing_branch(lock: Path) -> None:
     assert state.commits == []
 
 
+def test_commit_from_creates_the_missing_branch_at_the_head_of_the_source(lock: Path) -> None:
+    h, state = harness(branches={"main": OTHER})
+
+    result = run(h, add=[f"uv.lock={lock}"], from_branch="main")
+
+    assert result.ok
+    assert f"on {BRANCH} (new branch from main) (1 file(s) written, 0 deleted)" in result.message
+    assert state.created_branches == [(BRANCH, OTHER)]
+    # the commit sits on the head the branch was created at
+    assert state.commits[0][3] == OTHER
+    assert state.log == [f"create-branch {BRANCH}", f"commit {BRANCH}"]
+    assert h.tokens.requests[1][2] == {"contents": "write"}
+
+
+def test_commit_from_is_ignored_for_an_existing_branch_and_never_moves_it(lock: Path) -> None:
+    h, state = harness(branches={BRANCH: HEAD, "main": OTHER})
+
+    result = run(h, add=[f"uv.lock={lock}"], from_branch="main")
+
+    assert result.ok
+    assert "new branch" not in result.message
+    assert state.created_branches == []
+    assert state.commits[0][3] == HEAD
+
+
+def test_commit_from_needs_the_source_branch_to_exist(lock: Path) -> None:
+    h, state = harness(branches={})
+
+    result = run(h, add=[f"uv.lock={lock}"], from_branch="main")
+
+    assert result.outcome is VerbOutcome.ERROR
+    assert result.message == f"branch {BRANCH!r} does not exist and --from 'main' does not either"
+    assert state.created_branches == []
+    assert state.commits == []
+
+
+def test_commit_from_still_honours_expected_head(lock: Path) -> None:
+    h, state = harness(branches={"main": OTHER})
+
+    result = run(h, add=[f"uv.lock={lock}"], from_branch="main", expected_head=HEAD)
+
+    assert result.outcome is VerbOutcome.ERROR
+    assert "moved" in result.message
+    assert state.commits == []
+    assert state.created_branches == []  # nothing is created for a commit that will not happen
+
+
+@pytest.mark.parametrize(
+    ("source", "message"),
+    [("refs/heads/main", "must be a branch name, not a full ref"), (BRANCH, "another branch")],
+)
+def test_commit_from_refuses_bad_sources(source: str, message: str, lock: Path) -> None:
+    h, state = harness(branches={})
+
+    result = run(h, add=[f"uv.lock={lock}"], from_branch=source)
+
+    assert result.outcome is VerbOutcome.ERROR
+    assert message in result.message
+    assert state.created_branches == []
+
+
 def test_commit_deletes_only(tmp_path: Path) -> None:
     h, state = harness()
 

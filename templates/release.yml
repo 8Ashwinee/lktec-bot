@@ -1,0 +1,38 @@
+name: Release
+
+# Thin caller of the release workflow of lktec-bot. The triggers stay here because a reusable
+# workflow cannot declare them for the caller. Put this file at .github/workflows/release.yml and
+# read docs/modules/release.md of lktec-bot first: the release module must be enabled in
+# .github/lktec-bot.yml on the default branch and the App must be installed on the repository.
+#
+# Every push to the default branch is looked at: when the Conventional Commits since the last tag
+# call for a release, the tag and the GitHub release are created as the App. No deploy key, no
+# semantic-release.
+#
+# Once this runs, delete what it replaces:
+#   - the SEMANTIC_RELEASE_DEPLOY_KEY secret and the deploy key in the repository settings
+#     (Settings > Deploy keys); keep the tag ruleset as it is
+#   - the old caller of the release workflow of ci-workflows (the file this one replaces)
+#   - .releaserc.json (its rules move to modules.release.rules in .github/lktec-bot.yml)
+#
+# Runs of the workflow queue up per branch; a queued run that a newer push replaces is
+# cancelled by GitHub, which is fine because the newer push's run releases.
+#
+# Replace <sha> with a commit of lukislp/lktec-bot (a release tag's commit once there is one)
+# and the date with the day you pinned it. Like every other reference it stays pinned by SHA.
+# If the default branch is not main, change the trigger and set `branch` in the policy.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read # the reusable workflow reads which commit of itself the run uses
+
+jobs:
+  release:
+    uses: lukislp/lktec-bot/.github/workflows/release.yml@<sha> # 2026-11-06
+    secrets:
+      app-id: ${{ secrets.LKTEC_BOT_APP_ID }}
+      private-key: ${{ secrets.LKTEC_BOT_PRIVATE_KEY }}

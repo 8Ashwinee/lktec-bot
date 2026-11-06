@@ -25,3 +25,29 @@ modules:
     paths: []
     # One line; {number} is the pull request number.
     commit-message: "chore(deps): refresh lockfiles after Dependabot bump"
+
+  # Tags and publishes a release from the Conventional Commits on the default branch (see
+  # docs/modules/release.md). Set enabled: true once the release workflow is in place.
+  release:
+    enabled: false
+    # tag: a push is released as a tag plus a GitHub release. (pr, a release pull request, is
+    # planned and rejected for now.)
+    mode: tag
+    # The tag name; {version} exactly once.
+    tag-format: "v{version}"
+    # The branch releases are cut from.
+    branch: main
+    # The version when no tag matches tag-format yet.
+    first-version: "1.0.0"
+    # Evaluated in order before the defaults (breaking: major, feat: minor, fix, perf and revert: patch,
+    # anything else: nothing); the first rule that matches a commit decides. type, scope and
+    # breaking are conditions, release is major | minor | patch | none. Example, the rules many
+    # repositories carry in .releaserc.json:
+    #   - {breaking: true, release: minor}
+    #   - {type: refactor, release: patch}
+    #   - {type: fix, scope: ci, release: none}
+    rules: []
+    # Commit type to heading in the release notes; merged over feat: Features, fix: Bug Fixes,
+    # perf: Performance Improvements, revert: Reverts. Types without a heading that release
+    # through a rule appear under "Other changes".
+    sections: {}

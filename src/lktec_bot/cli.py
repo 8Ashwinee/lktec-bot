@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import typer
+from typer.core import TyperGroup
 
 from lktec_bot import __version__
 from lktec_bot.adapters._http_common import DEFAULT_BASE_URL
@@ -24,6 +25,7 @@ from lktec_bot.application.gate import Gate, VerbRequest, VerbResult, parse_repo
 from lktec_bot.application.modules import authorize, validate_policy
 from lktec_bot.application.modules.automerge.service import Automerge, Decision
 from lktec_bot.application.modules.lockfiles.service import Lockfiles
+from lktec_bot.application.modules.release.service import DEFAULT_SERVER, Release
 from lktec_bot.application.verbs import Option, VerbSpec, handlers, load_verbs
 from lktec_bot.domain.permissions import Target, Verb
 from lktec_bot.domain.policy import PolicyError
@@ -45,9 +47,22 @@ PROVIDERS = ("app",)
 # ``--target`` values of the verbs whose permission depends on what they act on.
 TARGETS: Mapping[str, Target] = {"pr": Target.PULL_REQUEST, "issue": Target.ISSUE}
 
+
+class _RootGroup(TyperGroup):
+    """``lktec-bot release run`` is the release module's command, while ``lktec-bot release``
+    is the verb of the same name; click cannot hold a group and a command under one name, so the
+    module command is registered as ``release-run`` and ``release run`` is rewritten to it."""
+
+    def parse_args(self, ctx: Any, args: list[str]) -> list[str]:
+        if args[:2] == ["release", "run"]:
+            args = ["release-run", *args[2:]]
+        return super().parse_args(ctx, args)
+
+
 # No pretty exceptions: a rich traceback with locals would print the token or the key when
 # something unexpected goes wrong.
 app = typer.Typer(
+    cls=_RootGroup,
     help="GitHub App bot core: least-privilege verbs, opt-in per repository.",
     no_args_is_help=True,
     pretty_exceptions_enable=False,
@@ -192,6 +207,16 @@ def _parameters_for(option: Option) -> list[Any]:
                 None,
             )
         ]
+    if option.kind == "flag":
+        negative = f"--no-{option.flag.removeprefix('--')}"
+        spelling = f"{option.flag}/{negative}" if option.default else option.flag
+        return [
+            _parameter(
+                option.name,
+                Annotated[bool, typer.Option(spelling, help=option.help)],
+                option.default,
+            )
+        ]
     python_type: Any
     if option.kind == "int":
         python_type = int
@@ -234,7 +259,9 @@ def collect_args(spec: VerbSpec, values: Mapping[str, object]) -> dict[str, obje
                 raise UsageError(f"{option.flag} or {option.flag}-file is required")
             continue
         value = values.get(option.name)
-        if option.kind == "multi":
+        if option.kind == "flag":
+            args[option.name] = bool(value) if value is not None else option.default
+        elif option.kind == "multi":
             if value:
                 args[option.name] = list(value) if isinstance(value, list | tuple) else [value]
         elif value is not None:
@@ -307,9 +334,22 @@ def add_verb_command(spec: VerbSpec) -> None:
     app.command(verb.value)(command)
 
 
+# Verbs that report a ``decision`` output; when the gate stops them (denied, error before the
+# handler ran) the decision is the outcome itself.
+DECISION_VERBS = frozenset({Verb.RELEASE, Verb.OPEN_PR})
+
+
 def _report(request: VerbRequest, result: VerbResult) -> None:
     write_summary(result.to_markdown(request))
-    write_outputs({"result": result.outcome.value, "message": result.message, "url": result.url})
+    outputs: dict[str, str | None] = {
+        "result": result.outcome.value,
+        "message": result.message,
+        "url": result.url,
+    }
+    if request.verb in DECISION_VERBS:
+        outputs["decision"] = result.outcome.value
+    outputs.update(result.outputs)
+    write_outputs(outputs)
     say(f"{result.outcome.value}: {result.message}")
     if result.url:
         say(f"url: {result.url}")
@@ -455,6 +495,60 @@ def lockfiles_commit(
     say(f"{outcome.decision.value}: {outcome.reason}")
     if outcome.url:
         say(f"url: {outcome.url}")
+    for warning in outcome.warnings:
+        say(f"warning: {warning}", err=True)
+    if outcome.exit_code:
+        raise typer.Exit(code=outcome.exit_code)
+
+
+@app.command("release-run")
+def release_run(
+    repository: Annotated[str, REPOSITORY_OPTION],
+    sha: Annotated[
+        str | None,
+        typer.Option(
+            "--sha",
+            help="The commit being released (default: the head of the release branch). "
+            "Skipped when the branch has moved on.",
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run", help="Work out the version and notes; write nothing, mint no write token."
+        ),
+    ] = False,
+) -> None:
+    """Release the head of the release branch when it holds releasable commits.
+
+    The next version comes from the Conventional Commits since the highest tag; the tag and the
+    GitHub release are created by the release verb. Exit 0 also when there is nothing to
+    release or the branch moved on, 3 when the policy denies, 1 on an error.
+    """
+    owner, repo, gate = _open_gate(repository)
+    server = os.environ.get("GITHUB_SERVER_URL", "").strip() or DEFAULT_SERVER
+    with closing(gate):
+        outcome = Release(gate, owner, repo, server_url=server).run(sha, dry_run=dry_run)
+    write_summary(outcome.to_markdown(f"{owner}/{repo}"))
+    write_outputs(
+        {
+            "result": outcome.result,
+            "decision": outcome.decision.value,
+            "version": outcome.version,
+            "tag": outcome.tag,
+            "url": outcome.url,
+            "reason": outcome.reason,
+            "message": outcome.reason,
+        }
+    )
+    say(f"{outcome.decision.value}: {outcome.reason}")
+    if outcome.version:
+        say(f"version: {outcome.version}")
+    if outcome.url:
+        say(f"url: {outcome.url}")
+    if dry_run and outcome.notes:
+        for line in outcome.notes.splitlines():
+            say(line)
     for warning in outcome.warnings:
         say(f"warning: {warning}", err=True)
     if outcome.exit_code:

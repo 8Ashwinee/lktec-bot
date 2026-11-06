@@ -8,10 +8,13 @@ from typing import Any
 
 from lktec_bot.ports.github_api import (
     BranchUpdate,
+    CommitInfo,
+    Comparison,
     CreatedCommit,
     IssueComment,
     MergeMethod,
     PullRequest,
+    Release,
     Review,
     ReviewEvent,
 )
@@ -113,6 +116,22 @@ class FakeRepository:
     commits: list[tuple[str, str, str, str, dict[str, bytes], list[str]]] = field(
         default_factory=list
     )
+    # Branches created through ``create_branch``: (name, sha).
+    created_branches: list[tuple[str, str]] = field(default_factory=list)
+    # Tag name -> commit id, and tag name -> published release.
+    tags: dict[str, str] = field(default_factory=dict)
+    releases: dict[str, Release] = field(default_factory=dict)
+    # Every release created: (tag, sha, name, body, latest, prerelease).
+    releases_created: list[tuple[str, str, str, str, bool, bool]] = field(default_factory=list)
+    # ``compare_commits`` answers by (base tag, head); the history ``list_commits`` serves
+    # (newest first); the number of compare pages that were fetched is not modelled.
+    comparisons: dict[tuple[str, str], Comparison] = field(default_factory=dict)
+    history: list[CommitInfo] = field(default_factory=list)
+    # The base branch of each pull request (``find_open_pull_request`` matches on it).
+    pull_bases: dict[int, str] = field(default_factory=dict)
+    pulls_created: list[tuple[str, str, str, str, bool]] = field(default_factory=list)
+    pulls_updated: list[tuple[int, str | None, str | None]] = field(default_factory=list)
+    draft_changes: list[tuple[int, bool]] = field(default_factory=list)
 
 
 @dataclass
@@ -215,6 +234,105 @@ class FakeGitHubApi:
         oid = f"{len(self.state.commits):040x}"
         self.state.branches[branch] = oid
         return CreatedCommit(oid, f"https://github.com/{owner}/{repo}/commit/{oid}")
+
+    def create_branch(self, owner: str, repo: str, branch: str, sha: str) -> None:
+        self.calls.append(("create_branch", (owner, repo, branch, sha)))
+        self.state.created_branches.append((branch, sha))
+        self.state.log.append(f"create-branch {branch}")
+        self.state.branches[branch] = sha
+
+    def get_release_by_tag(self, owner: str, repo: str, tag: str) -> Release | None:
+        self.calls.append(("get_release_by_tag", (owner, repo, tag)))
+        return self.state.releases.get(tag)
+
+    def get_tag_commit(self, owner: str, repo: str, tag: str) -> str | None:
+        self.calls.append(("get_tag_commit", (owner, repo, tag)))
+        return self.state.tags.get(tag)
+
+    def create_release(
+        self,
+        owner: str,
+        repo: str,
+        tag: str,
+        sha: str,
+        name: str,
+        body: str,
+        *,
+        latest: bool,
+        prerelease: bool,
+    ) -> str:
+        self.calls.append(("create_release", (owner, repo, tag, sha)))
+        self.state.releases_created.append((tag, sha, name, body, latest, prerelease))
+        self.state.log.append(f"release {tag}")
+        url = f"https://github.com/{owner}/{repo}/releases/tag/{tag}"
+        self.state.tags.setdefault(tag, sha)
+        self.state.releases[tag] = Release(tag, url)
+        return url
+
+    def list_tags(self, owner: str, repo: str, prefix: str) -> list[str]:
+        self.calls.append(("list_tags", (owner, repo, prefix)))
+        return [tag for tag in self.state.tags if tag.startswith(prefix)]
+
+    def compare_commits(self, owner: str, repo: str, base: str, head: str) -> Comparison:
+        self.calls.append(("compare_commits", (owner, repo, base, head)))
+        return self.state.comparisons[(base, head)]
+
+    def list_commits(self, owner: str, repo: str, sha: str) -> list[CommitInfo]:
+        self.calls.append(("list_commits", (owner, repo, sha)))
+        return list(self.state.history)
+
+    def find_open_pull_request(
+        self, owner: str, repo: str, head: str, base: str
+    ) -> PullRequest | None:
+        self.calls.append(("find_open_pull_request", (owner, repo, head, base)))
+        for number, pull_request in sorted(self.state.pull_requests.items()):
+            if (
+                pull_request.open
+                and pull_request.head_ref == head
+                and self.state.pull_bases.get(number) == base
+            ):
+                return pull_request
+        return None
+
+    def create_pull_request(
+        self, owner: str, repo: str, head: str, base: str, title: str, body: str, *, draft: bool
+    ) -> PullRequest:
+        self.calls.append(("create_pull_request", (owner, repo, head, base)))
+        self.state.pulls_created.append((head, base, title, body, draft))
+        self.state.log.append(f"open-pr {head}")
+        number = max(self.state.pull_requests, default=0) + 1
+        pull_request = PullRequest(
+            number=number,
+            html_url=f"https://github.com/{owner}/{repo}/pull/{number}",
+            state="open",
+            draft=draft,
+            head_sha="a" * 40,
+            title=title,
+            body=body,
+            head_ref=head,
+        )
+        self.state.pull_requests[number] = pull_request
+        self.state.pull_bases[number] = base
+        return pull_request
+
+    def update_pull_request(
+        self, owner: str, repo: str, number: int, *, title: str | None, body: str | None
+    ) -> None:
+        self.calls.append(("update_pull_request", (owner, repo, number)))
+        self.state.pulls_updated.append((number, title, body))
+        self.state.log.append(f"update-pr #{number}")
+        current = self.state.pull_requests[number]
+        self.state.pull_requests[number] = replace(
+            current,
+            title=current.title if title is None else title,
+            body=current.body if body is None else body,
+        )
+
+    def set_pull_request_draft(self, owner: str, repo: str, number: int, draft: bool) -> None:
+        self.calls.append(("set_pull_request_draft", (owner, repo, number, draft)))
+        self.state.draft_changes.append((number, draft))
+        self.state.log.append(f"draft #{number} {draft}")
+        self.state.pull_requests[number] = replace(self.state.pull_requests[number], draft=draft)
 
     def list_issue_comments(self, owner: str, repo: str, number: int) -> list[IssueComment]:
         self.calls.append(("list_issue_comments", (owner, repo, number)))

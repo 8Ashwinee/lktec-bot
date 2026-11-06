@@ -179,7 +179,9 @@ cannot read its own repository or commit from the `github` context. The run obje
 workflows it references with their repository and commit; the job reads that
 (`referenced_workflows`), checks out that repository at that commit into `.lktec-bot/` and runs
 `./.lktec-bot/actions/setup`. So the pin in the caller (`automerge.yml@<sha>`) decides exactly
-which code runs, and the job fails instead of falling back to a branch when it cannot tell. The
+which code runs, and the job fails instead of falling back to a branch when it cannot tell. Only
+an entry of the repository in the `bot-repository` input (default `lukislp/lktec-bot`, change it
+only in a fork) is trusted, so a workflow of another repository is never mistaken for it. The
 pull request's own code is never checked out: the job runs on `pull_request_target`, with
 secrets.
 

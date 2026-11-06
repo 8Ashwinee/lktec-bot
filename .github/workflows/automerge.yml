@@ -16,6 +16,11 @@ name: Automerge (reusable)
 # repository at the commit of this very workflow file, to install the bot from.
 on:
   workflow_call:
+    inputs:
+      bot-repository:
+        description: The repository this reusable workflow lives in. Change only in a fork.
+        type: string
+        default: lukislp/lktec-bot
     secrets:
       app-id:
         description: The GitHub App id (a secret named LKTEC_BOT_APP_ID in the caller).
@@ -69,8 +74,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN: ${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BOT_REPOSITORY: ${{ inputs.bot-repository }}
         run: |
-          entry="$(gh api "repos/$RUN" --jq '[.referenced_workflows[]? | select(.path | test("/[.]github/workflows/automerge[.]yml@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"')"
+          # Only an entry of the bot's own repository counts: a caller that also references the
+          # automerge.yml of another repository must not make this job run that repository's code.
+          entry="$(gh api "repos/$RUN" | jq -r --arg repo "$BOT_REPOSITORY" '[.referenced_workflows[]? | select(.path | startswith($repo + "/.github/workflows/automerge.yml@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"')"
           read -r repository sha <<< "$entry"
           if [[ ! "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ || ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::could not tell which commit of the automerge workflow this run uses: $entry"
@@ -130,8 +138,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN: ${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BOT_REPOSITORY: ${{ inputs.bot-repository }}
         run: |
-          entry="$(gh api "repos/$RUN" --jq '[.referenced_workflows[]? | select(.path | test("/[.]github/workflows/automerge[.]yml@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"')"
+          # Only an entry of the bot's own repository counts: a caller that also references the
+          # automerge.yml of another repository must not make this job run that repository's code.
+          entry="$(gh api "repos/$RUN" | jq -r --arg repo "$BOT_REPOSITORY" '[.referenced_workflows[]? | select(.path | startswith($repo + "/.github/workflows/automerge.yml@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"')"
           read -r repository sha <<< "$entry"
           if [[ ! "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ || ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::could not tell which commit of the automerge workflow this run uses: $entry"

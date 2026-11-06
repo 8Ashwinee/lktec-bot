@@ -26,6 +26,7 @@ src/lktec_bot/
     modules/         module registry (__init__.py): name -> allowed verbs + options model; authorize()
       automerge/     the automerge module: options.py, classify.py (pure), service.py (arm, sweep)
       lockfiles/     the lockfiles module: options.py, ecosystems.py (pure), service.py (commit)
+      release/       the release module: options.py, commits.py, notes.py (pure), service.py (run)
     verbs/           one file per verb: @register(Verb.X, grants=..., options=...) on the handler
       _common.py     --number parsing and the draft/closed refusal shared by the PR verbs
   cli.py         typer entry point; verb subcommands are built from the verb registry, module
@@ -132,6 +133,7 @@ repository enables a module; the registry bounds what an enabled module may do:
 | ----------- | -------------------------------------------------- | -------------------------------------------- |
 | `automerge` | `approve`, `enable-automerge`, `update-branch`, `comment` | `majors: manual \| auto`, `exclude: [str]`, `workflow-files: auto \| manual`, `method: squash \| merge \| rebase` (see [modules/automerge.md](modules/automerge.md)) |
 | `lockfiles` | `commit`, `comment`                                | `ecosystems: [uv \| dotnet]`, `paths: [str]`, `commit-message: str` (see [modules/lockfiles.md](modules/lockfiles.md)) |
+| `release`   | `release`                                          | `mode: tag`, `tag-format: str`, `branch: str`, `first-version: str`, `rules: [{type, scope, breaking, release}]`, `sections: {type: heading}` (see [modules/release.md](modules/release.md)) |
 | `ping`      | `ping`                                             | none                                         |
 
 An enabled module cannot run a verb outside its set, no matter what the policy file says.
@@ -150,7 +152,7 @@ whose service (the part that drives the gate) only the command line imports.
 A module that decides *what* to do needs to read before it writes (which pull requests exist,
 what they change). It does that through `Gate.read(owner, repo, module, permissions, reader)`:
 the module must be known and enabled in the policy, the reader gets a client bound to a token
-narrowed to exactly `permissions` (`pull_requests: read` for `automerge`, plus `contents: read` for `lockfiles`; scope-checked and
+narrowed to exactly `permissions` (`pull_requests: read` for `automerge`, plus `contents: read` for `lockfiles`, `contents: read` for `release`; scope-checked and
 revoked like a verb token) plus the validated policy to read its own options, and nothing it
 does may write. Every write is a verb and goes through `Gate.run`, each with its own narrowed
 token, so a module command never holds more than one permission at a time and the permission
@@ -177,8 +179,10 @@ whole project is reviewed in one place:
 | `open-issue`       | `issues:write`                           |
 | `deployment`       | `deployments:write`                      |
 
-The shipped verbs are `ping`, `comment`, `approve`, `enable-automerge`, `update-branch` and `commit`.
-`tests/test_verbs.py` pins the set of shipped verbs; adding one updates that line on purpose.
+The shipped verbs are `ping`, `comment`, `approve`, `enable-automerge`, `update-branch`, `commit`,
+`release` and `open-pr`. `tests/test_verbs.py` pins the set of shipped verbs; adding one updates
+that line on purpose. No shipped module may run `open-pr` yet: it is for the release module's
+planned `pr` mode and for add-ons, and a module gets it by adding it to its verb set.
 
 | Verb               | Options                                   | Behaviour                                                                 |
 | ------------------ | ----------------------------------------- | ------------------------------------------------------------------------- |
@@ -187,10 +191,18 @@ The shipped verbs are `ping`, `comment`, `approve`, `enable-automerge`, `update-
 | `approve`          | `--number N [--body\|--body-file]`        | `APPROVE` review; refuses drafts and closed PRs (`error`); no second review for a head the bot already approved |
 | `enable-automerge` | `--number N --method squash\|merge\|rebase` | GraphQL `enablePullRequestAutoMerge`; refuses drafts and closed PRs; already enabled with the same method is `ok`, with another method an `error` |
 | `update-branch`    | `--number N`                              | `PUT .../update-branch` with the current head sha; 202 is `ok`, GitHub's 422 "no new commits" is `ok` with a message, anything else an `error` |
-| `commit`           | `--branch B --message HEADLINE [--body\|--body-file] [--add PATH=FILE]... [--delete PATH]... [--expected-head OID]` | GraphQL `createCommitOnBranch`: one commit that GitHub signs (verified; author is the App's bot, committer is GitHub); the branch must exist; `expectedHeadOid` is `--expected-head` or the head resolved right before, so a concurrent push fails the mutation instead of being overwritten; refuses absolute paths, `..`, `.git` and everything under `.github/workflows/` (the App has no `workflows` permission) |
+| `commit`           | `--branch B [--from BRANCH] --message HEADLINE [--body\|--body-file] [--add PATH=FILE]... [--delete PATH]... [--expected-head OID]` | GraphQL `createCommitOnBranch`: one commit that GitHub signs (verified; author is the App's bot, committer is GitHub); the branch must exist, unless `--from` names a branch to create it from (`POST git/refs` at that branch's head, only when the branch is missing; an existing branch is never moved and no ref is force-updated); `expectedHeadOid` is `--expected-head` or the head resolved right before, so a concurrent push fails the mutation instead of being overwritten; refuses absolute paths, `..`, `.git` and everything under `.github/workflows/` (the App has no `workflows` permission) |
+| `release`          | `--tag T --sha SHA --name TITLE [--body\|--body-file] [--latest\|--no-latest] [--prerelease]` | `POST releases` with `target_commitish`: GitHub creates the lightweight tag at `SHA` when it does not exist. Release exists and the tag points at `SHA`: `unchanged`; the tag exists at another commit: `error`, a tag is never moved. Outputs `decision` (`created`, `unchanged`, `error`), `url`, `tag` |
+| `open-pr`          | `--head B --base B --title T [--body\|--body-file] [--draft]` | upsert: an open pull request `head` into `base` gets its title, body (only when given) and draft state changed to what was asked, only where they differ (the draft state through GraphQL, REST cannot toggle it); none exists: one is opened. Outputs `decision` (`opened`, `updated`, `unchanged`, `error`), `url`, `number` |
 
-Every result carries the relevant URL (comment, review or pull request). Nothing a verb
-prints or stores contains a token.
+Every result carries the relevant URL (comment, review, pull request or release). Nothing a verb
+prints or stores contains a token. A verb may report more `$GITHUB_OUTPUT` keys than `result`,
+`message` and `url` through `VerbResult.outputs` (`decision`, `tag`, `number`); for `release` and
+`open-pr`, `decision` is the outcome itself when the gate stops the run before the handler.
+
+The command `lktec-bot release run` (the release module) and the verb `lktec-bot release` share a
+name; click cannot hold a group and a command under one name, so the module command is
+registered as `release-run` and the root group rewrites `release run` to it.
 
 Verb handlers declare their grants next to the code (`@register(Verb.X, grants=...)`), and
 `register` refuses a handler whose grants differ from the table. The table is the source of

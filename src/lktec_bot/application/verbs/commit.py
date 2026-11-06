@@ -7,7 +7,8 @@ and signs it: it shows as verified, the author is the App's bot and the committe
 
 Safety rules, all checked before anything is sent:
 
-- the branch must exist;
+- the branch must exist, unless ``--from BRANCH`` is given: then a missing ``--branch`` is
+  created at the head of that branch first (an existing branch is never moved or force-updated);
 - the commit is made on top of ``--expected-head`` (default: the branch head resolved right
   before the call) and passed to GitHub as ``expectedHeadOid``, so a push that lands in between
   makes the mutation fail instead of being overwritten;
@@ -98,7 +99,14 @@ def _deletions(entries: list[str], additions: dict[str, bytes]) -> list[str]:
     Verb.COMMIT,
     grants=frozenset({Grant(Permission.CONTENTS, "write")}),
     options=(
-        Option("branch", "Branch to commit onto; it must exist.", required=True),
+        Option(
+            "branch", "Branch to commit onto; it must exist unless --from is given.", required=True
+        ),
+        Option(
+            "from_branch",
+            "Create --branch from the head of this branch when it does not exist yet.",
+            cli_flag="--from",
+        ),
         Option("message", "Commit headline (one line).", required=True),
         Option("body", "Commit message body.", kind="text"),
         Option(
@@ -125,6 +133,11 @@ def commit(api: GitHubApi, request: VerbRequest) -> VerbResult:
         expected = _text(request, "expected_head", required=False)
         if expected and not _OID.match(expected):
             raise _Refusal(f"--expected-head {expected!r} is not a full commit id")
+        source = _text(request, "from_branch", required=False)
+        if source.startswith("refs/"):
+            raise _Refusal(f"--from {source!r} must be a branch name, not a full ref")
+        if source == branch:
+            raise _Refusal("--from must name another branch than --branch")
         additions = _additions(_strings(request, "add"))
         deletions = _deletions(_strings(request, "delete"), additions)
         if not additions and not deletions:
@@ -133,13 +146,25 @@ def commit(api: GitHubApi, request: VerbRequest) -> VerbResult:
         return VerbResult(VerbOutcome.ERROR, f"refusing to commit: {refusal}")
 
     head = api.get_branch_head(request.owner, request.repo, branch)
+    created_from = ""
     if head is None:
-        return VerbResult(VerbOutcome.ERROR, f"branch {branch!r} does not exist")
+        if not source:
+            return VerbResult(VerbOutcome.ERROR, f"branch {branch!r} does not exist")
+        head = api.get_branch_head(request.owner, request.repo, source)
+        if head is None:
+            return VerbResult(
+                VerbOutcome.ERROR,
+                f"branch {branch!r} does not exist and --from {source!r} does not either",
+            )
+        created_from = f" (new branch from {source})"
     if expected and head != expected:
         return VerbResult(
             VerbOutcome.ERROR,
             f"branch {branch!r} moved: expected {expected}, now at {head}; nothing was committed",
         )
+    if created_from:
+        # Created at the head of the source branch; never a force-update of an existing branch.
+        api.create_branch(request.owner, request.repo, branch, head)
     created = api.create_commit_on_branch(
         request.owner,
         request.repo,
@@ -152,5 +177,7 @@ def commit(api: GitHubApi, request: VerbRequest) -> VerbResult:
     )
     changed = f"{len(additions)} file(s) written, {len(deletions)} deleted"
     return VerbResult(
-        VerbOutcome.OK, f"created commit {created.oid} on {branch} ({changed})", url=created.url
+        VerbOutcome.OK,
+        f"created commit {created.oid} on {branch}{created_from} ({changed})",
+        url=created.url,
     )

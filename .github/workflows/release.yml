@@ -1,0 +1,132 @@
+name: Release (reusable)
+
+# Tags and publishes a GitHub release for the head of the default branch under a GitHub App
+# identity, in place of semantic-release and a per-repository SSH deploy key. The caller keeps the
+# triggers (see templates/release.yml); everything below runs with the CALLER's event context.
+#
+# The next version comes from the Conventional Commits since the highest tag matching the
+# policy's tag-format (see docs/modules/release.md). The tag is created together with the release
+# by the release verb (contents: write, narrowed to this one repository); nothing is pushed and
+# no tag is ever moved. When the branch moved on since the push that started this run, the run
+# reports `skipped`: the newer push has a run of its own.
+#
+# dry-run: true works out the version and the notes and writes nothing. A release chain runs this
+# workflow once with dry-run as its first job (it replaces a get-version job), builds with the
+# `version` output, and runs it again without dry-run as its last job.
+on:
+  workflow_call:
+    inputs:
+      dry-run:
+        description: Work out the version and notes only; create no tag and no release.
+        type: boolean
+        default: false
+      bot-repository:
+        description: The repository this reusable workflow lives in. Change only in a fork.
+        type: string
+        default: lukislp/lktec-bot
+    secrets:
+      app-id:
+        description: The GitHub App id (a secret named LKTEC_BOT_APP_ID in the caller).
+        required: true
+      private-key:
+        description: The App's private key in PEM form (a secret named LKTEC_BOT_PRIVATE_KEY).
+        required: true
+    outputs:
+      released:
+        description: >-
+          "true" when a release was made, or, with dry-run, would be made; "false" otherwise
+          (nothing releasable, or the branch moved on).
+        value: ${{ jobs.release.outputs.released }}
+      decision:
+        description: released, would-release, none or skipped.
+        value: ${{ jobs.release.outputs.decision }}
+      version:
+        description: The version, for example 1.4.0; empty when there is no release.
+        value: ${{ jobs.release.outputs.version }}
+      tag:
+        description: The tag, for example v1.4.0; empty when there is no release.
+        value: ${{ jobs.release.outputs.tag }}
+      url:
+        description: URL of the GitHub release; empty for a dry run and when there is no release.
+        value: ${{ jobs.release.outputs.url }}
+
+# Everything that writes goes through the App's narrowed tokens, never through GITHUB_TOKEN.
+permissions:
+  contents: read
+  actions: read # to read which commit of this workflow the run uses
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Runs of this workflow queue up per branch. A queued run that a newer one replaces is
+    # cancelled by GitHub, which is fine: the newer push's run releases.
+    concurrency:
+      group: lktec-bot-release-${{ github.repository }}-${{ github.ref }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      released: ${{ contains(fromJSON('["released","would-release"]'), steps.release.outputs.decision) }}
+      decision: ${{ steps.release.outputs.decision }}
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      url: ${{ steps.release.outputs.url }}
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: block
+          # uv talks to PyPI only; the bot to api.github.com; setup-uv reads its version manifest
+          # from raw.githubusercontent.com and downloads uv from the GitHub release.
+          allowed-endpoints: >
+            api.github.com:443
+            files.pythonhosted.org:443
+            github.com:443
+            objects.githubusercontent.com:443
+            pypi.org:443
+            raw.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+      # The bot, at the commit this workflow file was called at. NOT the caller's repository: only
+      # the release is cut from it, through the API. A reusable workflow cannot read its own
+      # repository or commit from the github context, but the run lists the workflows it
+      # references with their commit.
+      - name: Find the commit this workflow was called at
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BOT_REPOSITORY: ${{ inputs.bot-repository }}
+        run: |
+          # Only an entry of the bot's own repository counts: a chain that still references the
+          # release.yml of another repository must not make this job run that repository's code.
+          entry="$(gh api "repos/$RUN" | jq -r --arg repo "$BOT_REPOSITORY" '[.referenced_workflows[]? | select(.path | startswith($repo + "/.github/workflows/release.yml@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"')"
+          read -r repository sha <<< "$entry"
+          if [[ ! "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ || ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::could not tell which commit of the release workflow this run uses: $entry"
+            exit 1
+          fi
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.source.outputs.repository }}
+          ref: ${{ steps.source.outputs.sha }}
+          path: .lktec-bot
+          persist-credentials: false
+      - uses: ./.lktec-bot/actions/setup
+      - name: Work out the version and cut the release
+        id: release
+        env:
+          LKTEC_BOT_APP_ID: ${{ secrets.app-id }}
+          LKTEC_BOT_PRIVATE_KEY: ${{ secrets.private-key }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          args=(--repository "$REPOSITORY" --sha "$SHA")
+          if [ "$DRY_RUN" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          lktec-bot release run "${args[@]}"

@@ -105,7 +105,10 @@ def test_policy_validate_reports_every_reason(tmp_path: Path) -> None:
 
     assert result.exit_code == 1
     assert "invalid: modules.automerge.nope: Extra inputs are not permitted" in result.output
-    assert "invalid: modules.x: unknown module (known: automerge, lockfiles, ping)" in result.output
+    assert (
+        "invalid: modules.x: unknown module (known: automerge, lockfiles, ping, release)"
+        in result.output
+    )
 
 
 def test_policy_validate_reports_structural_errors(tmp_path: Path) -> None:
@@ -143,11 +146,11 @@ def test_policy_check_denies_an_unknown_module(tmp_path: Path) -> None:
     policy = write_policy(tmp_path, VALID)
 
     result = runner.invoke(
-        app, ["policy", "check", "-f", str(policy), "-m", "release", "-v", "release"]
+        app, ["policy", "check", "-f", str(policy), "-m", "deploy", "-v", "release"]
     )
 
     assert result.exit_code == 3
-    assert "release for release: denied" in result.output
+    assert "release for deploy: denied" in result.output
     assert "not known" in result.output
 
 

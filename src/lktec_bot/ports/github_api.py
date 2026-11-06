@@ -68,6 +68,36 @@ class CreatedCommit:
     url: str
 
 
+@dataclass(frozen=True, slots=True)
+class Release:
+    """A published GitHub release, as far as the release verb needs to know."""
+
+    tag: str
+    html_url: str
+
+
+@dataclass(frozen=True, slots=True)
+class CommitInfo:
+    """One commit of a history listing: its id and the full message."""
+
+    sha: str
+    message: str
+    html_url: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class Comparison:
+    """``compare/{base}...{head}``: how head relates to base and the commits it adds.
+
+    ``commits`` is oldest first. ``total_commits`` is what GitHub says the comparison holds, so
+    a caller can tell a partial list from a complete one.
+    """
+
+    status: str  # "ahead", "behind", "identical" or "diverged"
+    total_commits: int
+    commits: tuple[CommitInfo, ...] = ()
+
+
 class BranchUpdate(StrEnum):
     """What ``update_branch`` achieved: the update was queued, or there was nothing to do."""
 
@@ -149,6 +179,70 @@ class GitHubApi(Protocol):
         ``expected_head_oid`` instead of overwriting a concurrent push. ``additions`` maps a
         repository path to the file's new content (the adapter encodes it).
         """
+        ...
+
+    def create_branch(self, owner: str, repo: str, branch: str, sha: str) -> None:
+        """Create ``refs/heads/<branch>`` at ``sha``. Fails when the branch already exists."""
+        ...
+
+    def get_release_by_tag(self, owner: str, repo: str, tag: str) -> Release | None:
+        """The published release for ``tag``, or ``None`` when there is none."""
+        ...
+
+    def get_tag_commit(self, owner: str, repo: str, tag: str) -> str | None:
+        """The commit id ``tag`` points at (an annotated tag is resolved), or ``None``."""
+        ...
+
+    def create_release(
+        self,
+        owner: str,
+        repo: str,
+        tag: str,
+        sha: str,
+        name: str,
+        body: str,
+        *,
+        latest: bool,
+        prerelease: bool,
+    ) -> str:
+        """Create a release for ``tag`` and return its HTML URL.
+
+        GitHub creates a lightweight tag at ``sha`` when the tag does not exist.
+        """
+        ...
+
+    def list_tags(self, owner: str, repo: str, prefix: str) -> Sequence[str]:
+        """Every tag name that starts with ``prefix`` (``git/matching-refs/tags/<prefix>``)."""
+        ...
+
+    def compare_commits(self, owner: str, repo: str, base: str, head: str) -> Comparison:
+        """``base...head`` with every commit page fetched (up to the API's own ceiling)."""
+        ...
+
+    def list_commits(self, owner: str, repo: str, sha: str) -> Sequence[CommitInfo]:
+        """Every commit reachable from ``sha``, newest first."""
+        ...
+
+    def find_open_pull_request(
+        self, owner: str, repo: str, head: str, base: str
+    ) -> PullRequest | None:
+        """The open pull request from branch ``head`` (same repository) into ``base``."""
+        ...
+
+    def create_pull_request(
+        self, owner: str, repo: str, head: str, base: str, title: str, body: str, *, draft: bool
+    ) -> PullRequest:
+        """Open a pull request from branch ``head`` into ``base``."""
+        ...
+
+    def update_pull_request(
+        self, owner: str, repo: str, number: int, *, title: str | None, body: str | None
+    ) -> None:
+        """Change the title and/or body of a pull request (``None`` leaves a field alone)."""
+        ...
+
+    def set_pull_request_draft(self, owner: str, repo: str, number: int, draft: bool) -> None:
+        """Convert a pull request to a draft or mark it ready for review (GraphQL)."""
         ...
 
     def list_issue_comments(self, owner: str, repo: str, number: int) -> Sequence[IssueComment]:

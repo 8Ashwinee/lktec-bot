@@ -51,7 +51,7 @@ modules:
 ```
 
 Each module may only run the verbs registered for it (`automerge`: approve, enable-automerge,
-update-branch, comment; `lockfiles`: commit, comment; `ping`: ping), and only the options it declares; anything else makes
+update-branch, comment; `lockfiles`: commit, comment; `release`: release; `ping`: ping), and only the options it declares; anything else makes
 the file invalid and denies every verb.
 
 To run a verb against a real repository, register an App ([docs/register-your-app.md](docs/register-your-app.md)),
@@ -78,14 +78,16 @@ so far).
   differences to the personal-access-token workflow and how to set up a repository.
 - [docs/modules/lockfiles.md](docs/modules/lockfiles.md): the lockfiles module and the `commit`
   verb: signed bot commits that replace a personal access token and a signing key.
+- [docs/modules/release.md](docs/modules/release.md): the release module, the `release` verb,
+  how semantic-release maps onto it, release chains and how to set up a repository.
 - [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ## Verbs and actions
 
 The phase-1 verbs ship: `ping`, `comment` (with an optional marker to update the bot's own
 earlier comment instead of adding one), `approve`, `enable-automerge` and `update-branch`, and
-`commit` (a commit on an existing branch that GitHub signs; CLI only so far). Each phase-1 verb
-is a CLI subcommand and a composite action under [`actions/`](actions/README.md):
+`commit` (a commit on a branch that GitHub signs; CLI only so far), `release` and `open-pr`. Each
+verb except `commit` is a CLI subcommand and a composite action under [`actions/`](actions/README.md):
 
 ```yaml
 - uses: lukislp/lktec-bot/actions/setup@<sha> # vX.Y.Z
@@ -120,18 +122,28 @@ access token and no signing key. Reusable workflow
 ([`.github/workflows/lockfiles.yml`](.github/workflows/lockfiles.yml)) and caller template
 ([`templates/dependabot-lockfiles.yml`](templates/dependabot-lockfiles.yml)).
 
-## Status: phase 1, pre-release
+The [`release` module](docs/modules/release.md) replaces semantic-release and its per-repository
+SSH deploy key: `lktec-bot release run` works out the next version from the Conventional Commits
+since the last tag, renders the notes in semantic-release's style and creates the tag and the
+GitHub release with the `release` verb (`contents: write`, an installation token narrowed to the
+repository). Reusable workflow ([`.github/workflows/release.yml`](.github/workflows/release.yml),
+with a `dry-run` input and `version` output for release chains) and caller template
+([`templates/release.yml`](templates/release.yml)). Mode `tag` only; a release pull request
+(`pr`) is planned. The verb `open-pr` (open or update a pull request) and `commit --from` (create
+the branch first) ship with it.
 
-Policy schema, permission table, gate, token minting, HTTP adapter, CLI, the five phase-1
-verbs and their composite actions, all tested against fakes and mocked HTTP, plus the live
-end-to-end workflow.
+## Status: phase 2, pre-release
+
+Policy schema, permission table, gate, token minting, HTTP adapter, CLI, the phase-1 verbs and
+their composite actions, the `release` and `open-pr` verbs, and the automerge, lockfiles and
+release modules, all tested against fakes and mocked HTTP, plus the live end-to-end workflow.
 
 Deliberately not in this repository yet:
 
-- **The release workflow.** It still relies on a credential this project replaces (a deploy key
-  that pushes release commits). `release` follows.
-- **Releases and tags.** No version has been published; `hatch-vcs` derives the version from
-  tags once they exist. Until then pin the actions by commit SHA.
+- **Release mode `pr`** (a reviewed release pull request with changelog and version files).
+- **Releases and tags of this repository.** No version has been published; `hatch-vcs` derives
+  the version from tags once they exist. Until then pin the actions by commit SHA. The release
+  module's first pilot is `lukislp/mowdeck-hacs`.
 
 ## License
 

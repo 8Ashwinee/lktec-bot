@@ -176,6 +176,10 @@ unlike `GITHUB_TOKEN`), including the lockfiles workflow itself: the second run 
 files equal to the head and stops with "nothing to commit". A second commit is only made when a
 regeneration really differs, so the version pin of the `uv` step matters.
 
+The workflow finds the commit it was called at among the workflows the run references and only
+trusts an entry of the repository in its `bot-repository` input (default `lukislp/lktec-bot`,
+change it only in a fork).
+
 ## Setting up a repository
 
 1. **Install the App** on the repository and store `LKTEC_BOT_APP_ID` and
