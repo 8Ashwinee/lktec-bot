@@ -279,7 +279,19 @@ the httpx adapter together, with a respx test.
 - 403/429 secondary rate limit (`Retry-After`, exhausted `X-RateLimit-Remaining`, or the
   words in the body): retried for every method, because GitHub rejected the request before
   acting on it.
-- Transport errors (connection dropped, timeout): wrapped into `GitHubHttpError`; retried once
+- The primary rate limit (5,000 requests per hour) is per installation, not per repository: the
+  App has one installation per account, so every repository it is installed on shares one
+  budget, and a migration burst across many of them can exhaust it. It resets only at
+  `X-RateLimit-Reset`, so exponential back-off cannot help. A 403/429 without `Retry-After`
+  that says "API rate limit exceeded" (or carries `X-RateLimit-Remaining: 0`) plus a reset
+  header is treated as primary: when the reset is at most `max_rate_limit_wait_seconds` away
+  (600 by default) the adapter logs one line to stderr, sleeps until the reset, and retries
+  once; otherwise it raises `GitHubHttpError` at once, naming the reset time (UTC). A run that
+  fails on it is safe to re-run after the reset: sweeps are idempotent and a release run
+  re-reads everything. The adapter keeps the last `X-RateLimit-Remaining` it saw
+  (`last_rate_limit`); the gate hands it to the CLI, which appends `rate limit remaining: N`
+  to the final line of `automerge arm`, `automerge sweep`, `lockfiles commit` and
+  `release run`.- Transport errors (connection dropped, timeout): wrapped into `GitHubHttpError`; retried once
   for idempotent methods.
 - A `Retry-After` above the back-off limit (30 s by default) fails the call instead of being
   capped: the job would otherwise wait for a limit it cannot see.

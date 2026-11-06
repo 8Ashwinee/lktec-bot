@@ -14,7 +14,7 @@ from lktec_bot.application.modules.release.service import Decision, Release, Rel
 from lktec_bot.application.verbs import handlers
 from lktec_bot.cli import app
 from lktec_bot.domain.policy import POLICY_PATH
-from lktec_bot.ports.github_api import CommitInfo, Comparison
+from lktec_bot.ports.github_api import CommitInfo, Comparison, RateLimit
 from lktec_bot.summary import mask_secret
 from tests.fakes import FakeApiFactory, FakeGitHubApi, FakeRepository, FakeTokenProvider
 
@@ -549,3 +549,13 @@ def test_a_denied_release_verb_reports_the_decision_denied(
 
     assert result.exit_code == 3
     assert outputs(tmp_path)["decision"] == "denied"
+
+
+def test_release_run_appends_the_remaining_rate_limit(
+    wired: Setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(FakeApiFactory, "last_rate_limit", RateLimit(12))
+
+    result = runner.invoke(app, ["release", "run", "-R", "acme/widgets", "--sha", HEAD])
+
+    assert "(rate limit remaining: 12)" in result.stdout

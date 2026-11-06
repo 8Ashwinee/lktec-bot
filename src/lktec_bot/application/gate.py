@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping
-from contextlib import closing
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Protocol
@@ -18,7 +18,7 @@ from lktec_bot.application.modules import (
 )
 from lktec_bot.domain.permissions import Target, Verb, as_token_request, permissions_for
 from lktec_bot.domain.policy import POLICY_PATH, Policy, PolicyError
-from lktec_bot.ports.github_api import GitHubApi, GitHubApiFactory
+from lktec_bot.ports.github_api import GitHubApi, GitHubApiFactory, RateLimit
 from lktec_bot.ports.token_provider import Token, TokenError, TokenProvider
 from lktec_bot.text import escape_markdown, sanitize
 
@@ -169,6 +169,8 @@ class Gate:
         self._caller_token = caller_token
         self._policy_path = policy_path
         self._mask = mask
+        # The budget the last client reported; the CLI prints it, nothing decides on it.
+        self.last_rate_limit: RateLimit | None = None
 
     def close(self) -> None:
         """Release the token provider's connections."""
@@ -214,7 +216,7 @@ class Gate:
             return result.with_warnings(*warnings)
 
         try:
-            with closing(self._api_factory(token.value)) as api:
+            with self._client(token.value) as api:
                 result = handler(api, replace(request, actor=token.actor))
         except Exception as exc:
             result = VerbResult(VerbOutcome.ERROR, f"{request.verb.value} failed: {exc}")
@@ -268,7 +270,7 @@ class Gate:
             result = VerbResult(VerbOutcome.ERROR, f"read token refused: {problem}")
             return ReadResult(failure=result.with_warnings(*warnings))
         try:
-            with closing(self._api_factory(token.value)) as api:
+            with self._client(token.value) as api:
                 outcome = ReadResult(value=reader(api, policy))
         except Exception as exc:
             failed = VerbResult(VerbOutcome.ERROR, f"{module} could not read: {exc}")
@@ -278,6 +280,15 @@ class Gate:
         return replace(outcome, warnings=tuple(warnings))
 
     # -- helpers ---------------------------------------------------------------------------
+
+    @contextmanager
+    def _client(self, token: str) -> Iterator[GitHubApi]:
+        with closing(self._api_factory(token)) as api:
+            try:
+                yield api
+            finally:
+                if api.last_rate_limit is not None:
+                    self.last_rate_limit = api.last_rate_limit
 
     def _mint(self, owner: str, repo: str, permissions: Mapping[str, str]) -> Token:
         token = self._tokens.token_for(owner, repo, permissions)
@@ -304,14 +315,14 @@ class Gate:
 
     def _load_policy(self, owner: str, repo: str, warnings: list[str]) -> Policy | None:
         if self._caller_token is not None:
-            with closing(self._api_factory(self._caller_token)) as api:
+            with self._client(self._caller_token) as api:
                 return self._read_policy(api, owner, repo)
         token = self._mint(owner, repo, POLICY_READ_PERMISSIONS)
         try:
             problem = self._scope_problem(token, POLICY_READ_PERMISSIONS, repo)
             if problem is not None:
                 raise TokenError(f"policy token refused: {problem}")
-            with closing(self._api_factory(token.value)) as api:
+            with self._client(token.value) as api:
                 return self._read_policy(api, owner, repo)
         finally:
             self._revoke_safely(token, warnings)
