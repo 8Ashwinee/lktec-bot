@@ -163,7 +163,14 @@ The `workflows` permission is never requested (see `docs/architecture.md`).
    `dependabot-auto-merge.yml`.
 6. **Ruleset.** Keep the bypass list as small as it can be; the bot does not need to be on it.
    If the ruleset requires an approving review, the bot's approval counts as one (it is a
-   different identity from the pull request author).
+   different identity from the pull request author). It does **not** count as a code owner
+   review: the App is never listed in `CODEOWNERS`, so with *require review from code owners*
+   enabled an armed pull request waits for a person. Turn that setting off (or have no
+   `CODEOWNERS` file) in a repository where the bot's approval is meant to be the one review.
+   For the OpenSSF Scorecard this costs nothing: the code owner review sits in branch-protection
+   tier 4 next to *two* required reviewers, so on its own it never scores. Leave *require
+   approval of the most recent reviewable push* off as well where the [lockfiles](lockfiles.md)
+   module runs: the bot pushes a commit there and then approves, which that setting forbids.
 
 ## How the workflow installs the bot
 
