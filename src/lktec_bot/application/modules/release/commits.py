@@ -2,9 +2,9 @@
 
 Behaves like semantic-release's commit analyzer with the Angular defaults (breaking: major,
 ``feat``: minor, ``fix``, ``perf`` and ``revert``: patch, everything else: nothing), plus the
-policy's own rules evaluated first. Only the first line of a message decides the type, scope and subject, so
-a squash-merge commit is analysed by its headline like semantic-release does; a ``BREAKING
-CHANGE:`` line anywhere in the message still marks it as breaking.
+policy's own rules evaluated first. Only the first line of a message decides the type, scope and
+subject, so a squash-merge commit is analysed by its headline like semantic-release does; a
+``BREAKING CHANGE:`` line anywhere in the message still marks it as breaking.
 """
 
 from __future__ import annotations
