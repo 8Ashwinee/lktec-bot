@@ -259,6 +259,8 @@ def test_handler_exception_becomes_error_and_token_is_still_revoked() -> None:
 
 def test_policy_read_failure_is_an_error_not_a_crash() -> None:
     class Broken:
+        last_rate_limit = None
+
         def __init__(self, token: str) -> None:
             self.token = token
 

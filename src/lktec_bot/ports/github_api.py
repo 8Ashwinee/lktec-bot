@@ -13,6 +13,14 @@ MergeMethod = Literal["MERGE", "SQUASH", "REBASE"]
 
 
 @dataclass(frozen=True, slots=True)
+class RateLimit:
+    """The budget GitHub reported on the last answer: requests left and the reset (unix s)."""
+
+    remaining: int
+    reset: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class PullRequest:
     """What the verbs need to know about a pull request before they touch it."""
 
@@ -274,6 +282,11 @@ class GitHubApi(Protocol):
 
     def graphql(self, query: str, variables: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """Run a GraphQL query and return its ``data`` object."""
+        ...
+
+    @property
+    def last_rate_limit(self) -> RateLimit | None:
+        """The rate-limit budget from the most recent answer, None until one reported it."""
         ...
 
     def close(self) -> None:

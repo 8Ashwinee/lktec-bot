@@ -371,6 +371,12 @@ for _spec in load_verbs().values():
 REPOSITORY_OPTION = typer.Option("--repository", "-R", help="Target repository as owner/name.")
 
 
+def _with_budget(line: str, gate: Gate) -> str:
+    """`line` plus the installation's remaining request budget, when a response reported it."""
+    limit = gate.last_rate_limit
+    return line if limit is None else f"{line} (rate limit remaining: {limit.remaining})"
+
+
 def _open_gate(repository: str) -> tuple[str, str, Gate]:
     try:
         owner, repo = parse_repository(repository)
@@ -407,7 +413,7 @@ def automerge_arm(
             "url": result.url,
         }
     )
-    say(f"{result.decision.value}: {result.reason}")
+    say(_with_budget(f"{result.decision.value}: {result.reason}", gate))
     if result.url:
         say(f"url: {result.url}")
     for warning in result.warnings:
@@ -430,7 +436,7 @@ def automerge_sweep(repository: Annotated[str, REPOSITORY_OPTION]) -> None:
     if result.failure is not None:
         outcome = result.failure.outcome.value
         write_outputs({"result": outcome, "message": result.failure.message})
-        say(f"{outcome}: {result.failure.message}")
+        say(_with_budget(f"{outcome}: {result.failure.message}", gate))
     else:
         message = (
             f"armed {result.armed}, re-approved {result.approved}, updated {result.updated}, "
@@ -448,7 +454,7 @@ def automerge_sweep(repository: Annotated[str, REPOSITORY_OPTION]) -> None:
         )
         for row in result.rows:
             say(f"#{row.number} ({row.author}, {row.state or '-'}): {row.detail()}")
-        say(f"ok: {message}")
+        say(_with_budget(f"ok: {message}", gate))
     for warning in result.warnings:
         say(f"warning: {warning}", err=True)
     if result.exit_code:
@@ -492,7 +498,7 @@ def lockfiles_commit(
             "url": outcome.url,
         }
     )
-    say(f"{outcome.decision.value}: {outcome.reason}")
+    say(_with_budget(f"{outcome.decision.value}: {outcome.reason}", gate))
     if outcome.url:
         say(f"url: {outcome.url}")
     for warning in outcome.warnings:
@@ -541,7 +547,7 @@ def release_run(
             "message": outcome.reason,
         }
     )
-    say(f"{outcome.decision.value}: {outcome.reason}")
+    say(_with_budget(f"{outcome.decision.value}: {outcome.reason}", gate))
     if outcome.version:
         say(f"version: {outcome.version}")
     if outcome.url:

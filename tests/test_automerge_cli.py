@@ -12,6 +12,7 @@ from lktec_bot.application.gate import Gate
 from lktec_bot.application.verbs import handlers
 from lktec_bot.cli import app
 from lktec_bot.domain.policy import POLICY_PATH
+from lktec_bot.ports.github_api import RateLimit
 from lktec_bot.summary import mask_secret
 from tests.fakes import FakeApiFactory, FakeRepository, FakeTokenProvider
 from tests.test_automerge_service import MAJOR, PATCH, POLICY, pr
@@ -199,3 +200,21 @@ def test_the_help_lists_both_commands() -> None:
     assert result.exit_code == 0
     assert "arm" in result.stdout
     assert "sweep" in result.stdout
+
+
+def test_arm_and_sweep_append_the_remaining_rate_limit(
+    wired: Wired, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(FakeApiFactory, "last_rate_limit", RateLimit(4321, 1_700_000_000))
+
+    arm = runner.invoke(app, ["automerge", "arm", "-R", "acme/widgets", "--number", "7"])
+    sweep = runner.invoke(app, ["automerge", "sweep", "-R", "acme/widgets"])
+
+    assert "approved, auto-merge (squash) enabled (rate limit remaining: 4321)" in arm.stdout
+    assert "errors 0 (rate limit remaining: 4321)" in sweep.stdout
+
+
+def test_the_rate_limit_suffix_is_left_out_when_unknown(wired: Wired) -> None:
+    result = runner.invoke(app, ["automerge", "sweep", "-R", "acme/widgets"])
+
+    assert "rate limit" not in result.stdout
