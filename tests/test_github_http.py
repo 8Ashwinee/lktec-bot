@@ -635,6 +635,32 @@ def test_list_pull_request_files_includes_the_old_name_of_a_rename(
 
 
 @respx.mock(base_url=BASE)
+def test_list_pull_request_commits_reads_the_signature_verification(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.get("/repos/acme/widgets/pulls/7/commits").respond(
+        200,
+        json=[
+            {"sha": "a1", "commit": {"verification": {"verified": True, "reason": "valid"}}},
+            {"sha": "b2", "commit": {"verification": {"verified": False, "reason": "unsigned"}}},
+            {"sha": "c3", "commit": {}},
+            {"sha": "d4", "commit": {"verification": None}},
+            {"sha": "e5"},
+        ],
+    )
+
+    commits = api.list_pull_request_commits("acme", "widgets", 7)
+
+    assert [(c.sha, c.verified, c.reason) for c in commits] == [
+        ("a1", True, "valid"),
+        ("b2", False, "unsigned"),
+        ("c3", False, "unknown"),
+        ("d4", False, "unknown"),
+        ("e5", False, "unknown"),
+    ]
+
+
+@respx.mock(base_url=BASE)
 def test_get_pull_request_reads_the_head_branch_and_repository(
     api: HttpGitHubApi, respx_mock: respx.MockRouter
 ) -> None:

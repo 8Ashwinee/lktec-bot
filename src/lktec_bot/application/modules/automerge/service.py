@@ -140,6 +140,9 @@ class _Assessment:
 class _Entry:
     pull_request: PullRequest  # as of the survey, with ``merge_state`` when it was needed
     eligibility: Eligibility | None  # Dependabot pull requests only
+    # GitHub's verification reason of the first unsigned commit; read only for a Dependabot pull
+    # request the sweep is responsible for that is not conflicting. ``None``: all signed.
+    unsigned: str | None = None
 
     @property
     def dependabot(self) -> bool:
@@ -293,8 +296,18 @@ class Automerge:
                 auto_merge or not dependabot or (eligibility is not None and eligibility.arm)
             )
             pull_request = self._with_merge_state(api, listed) if needs_state else listed
-            entries.append(_Entry(pull_request, eligibility))
+            unsigned = None
+            if dependabot and needs_state and pull_request.merge_state != DIRTY:
+                # A commit GitHub does not verify can never satisfy a signature ruleset.
+                unsigned = self._unsigned_reason(api, pull_request.number)
+            entries.append(_Entry(pull_request, eligibility, unsigned))
         return _Survey(options, tuple(entries))
+
+    def _unsigned_reason(self, api: GitHubApi, number: int) -> str | None:
+        for commit in api.list_pull_request_commits(self._owner, self._repo, number):
+            if not commit.verified:
+                return commit.reason
+        return None
 
     def _with_merge_state(self, api: GitHubApi, listed: PullRequest) -> PullRequest:
         pull_request = listed
@@ -319,6 +332,17 @@ class Automerge:
         auto_merge = entry.auto_merge
         just_armed = False
         eligibility = entry.eligibility
+
+        if entry.unsigned is not None:
+            # A recreate replaces the head, so nothing else is done to this one in this run.
+            self._recreate(
+                pull_request,
+                row,
+                warnings,
+                counts,
+                f"has an unsigned commit ({entry.unsigned}), asked Dependabot to recreate",
+            )
+            return row
 
         if entry.dependabot and eligibility is not None and not auto_merge:
             if eligibility.excluded:
@@ -375,7 +399,12 @@ class Automerge:
         return True
 
     def _recreate(
-        self, pull_request: PullRequest, row: Row, warnings: list[str], counts: dict[str, int]
+        self,
+        pull_request: PullRequest,
+        row: Row,
+        warnings: list[str],
+        counts: dict[str, int],
+        action: str = "has conflicts, asked Dependabot to recreate",
     ) -> None:
         # One marker per head: the comment is posted once for a head, and again when Dependabot
         # or someone pushed a new one and it is still conflicting.
@@ -394,7 +423,7 @@ class Automerge:
         if not result.ok:
             row.errors.append(f"comment: {result.message}")
             return
-        row.actions.append("has conflicts, asked Dependabot to recreate")
+        row.actions.append(action)
         counts["recreated"] += 1
 
     def _reapprove(

@@ -14,6 +14,7 @@ from lktec_bot.ports.github_api import (
     IssueComment,
     MergeMethod,
     PullRequest,
+    PullRequestCommit,
     Release,
     Review,
     ReviewEvent,
@@ -102,6 +103,8 @@ class FakeRepository:
     next_comment_id: int = 100
     # Changed files per pull request; what ``list_pull_request_files`` answers.
     pull_files: dict[int, list[str]] = field(default_factory=dict)
+    # Commits per pull request; what ``list_pull_request_commits`` answers (none: all verified).
+    pull_commits: dict[int, list[PullRequestCommit]] = field(default_factory=dict)
     # ``merge_state`` answers handed out one per ``get_pull_request`` call before the stored
     # state applies, to play GitHub's lazily computed UNKNOWN.
     merge_state_script: dict[int, list[str]] = field(default_factory=dict)
@@ -174,6 +177,14 @@ class FakeGitHubApi:
     def list_pull_request_files(self, owner: str, repo: str, number: int) -> list[str]:
         self.calls.append(("list_pull_request_files", (owner, repo, number)))
         return list(self.state.pull_files.get(number, []))
+
+    def list_pull_request_commits(
+        self, owner: str, repo: str, number: int
+    ) -> list[PullRequestCommit]:
+        self.calls.append(("list_pull_request_commits", (owner, repo, number)))
+        return list(
+            self.state.pull_commits.get(number, [PullRequestCommit("c0ffee", True, "valid")])
+        )
 
     def list_reviews(self, owner: str, repo: str, number: int) -> list[Review]:
         self.calls.append(("list_reviews", (owner, repo, number)))

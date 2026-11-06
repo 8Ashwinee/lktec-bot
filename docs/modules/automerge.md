@@ -76,6 +76,13 @@ Looks at every open, non-draft pull request:
    `update-branch` it leaves a conflict alone, and `recreate` rebuilds the pull request from the
    current base. The comment is an upsert with the marker `automerge-recreate-<head>`: once per
    head commit, and again when the head changed and the pull request still conflicts.
+   The same comment answers a Dependabot pull request (armed, or eligible to be armed) with a
+   commit GitHub does not verify (`verification.verified == false`, for example `unsigned`):
+   a ruleset that requires signed commits can never merge it, and neither `update-branch` nor an
+   approval helps, but a recreated pull request carries a fresh, signed commit. The sweep reads
+   the commits of such a pull request (one extra call, covered by `pull_requests: read`) and
+   does nothing else to it in that run. A pull request left for a person, a conflicting one
+   (already recreated above) and anyone else's pull request are never touched for this.
 4. **Re-approve.** An eligible Dependabot pull request that already has auto-merge enabled gets
    `approve` again, which is a no-op while the bot's approval is on the current head. A head
    that moved (a rebase, `update-branch`) needs a review of its own when the ruleset dismisses
