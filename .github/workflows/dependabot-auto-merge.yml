@@ -1,8 +1,8 @@
 name: Dependabot auto-merge
 
 # lktec-bot uses its own automerge workflow (docs/modules/automerge.md). The pin below is a
-# commit of the pull request branch that introduced the workflow: after that pull request is
-# merged, move it to a commit of main.
+# commit of main; move it by hand when a change to the reusable workflow or to the modules
+# should take effect here (the bot is installed from the pinned commit).
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review, auto_merge_enabled]
@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   automerge:
-    uses: lukislp/lktec-bot/.github/workflows/automerge.yml@f509bab74ea73762dc5aa62d53a8d0ca44bf138e # 2026-11-05
+    uses: lukislp/lktec-bot/.github/workflows/automerge.yml@7135078713cdb76a17fd9b204a39fdba17a346de # 2026-11-06
     secrets:
       app-id: ${{ secrets.LKTEC_BOT_APP_ID }}
       private-key: ${{ secrets.LKTEC_BOT_PRIVATE_KEY }}
