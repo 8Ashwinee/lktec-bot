@@ -160,8 +160,11 @@ class Release:
 
     def _plan(self, api: GitHubApi, policy: Policy, sha: str | None, day: date) -> _Plan:
         options = ReleaseOptions.model_validate(policy.modules[MODULE].options)
-        if sha is not None and (len(sha) not in _OID_LENGTHS or not _is_hex(sha)):
-            raise ValueError(f"--sha {sha!r} is not a full commit id")
+        if sha is not None:
+            # Git prints object ids in lower case; a caller may still hand one over upper-cased.
+            sha = sha.lower()
+            if len(sha) not in _OID_LENGTHS or not _is_hex(sha):
+                raise ValueError(f"--sha {sha!r} is not a full commit id")
         head = api.get_branch_head(self._owner, self._repo, options.branch)
         if head is None:
             raise RuntimeError(f"the release branch {options.branch!r} does not exist")

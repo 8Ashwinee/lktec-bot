@@ -231,12 +231,19 @@ def test_a_missing_release_branch_is_an_error() -> None:
     assert "the release branch 'main' does not exist" in outcome.reason
 
 
-@pytest.mark.parametrize("sha", ["HEAD", "abc", "g" * 40, HEAD.upper()])
+@pytest.mark.parametrize("sha", ["HEAD", "abc", "g" * 40, "G" * 40])
 def test_a_bad_sha_is_an_error(sha: str) -> None:
     outcome = Setup().run(sha)
 
     assert outcome.decision is Decision.ERROR
     assert "is not a full commit id" in outcome.reason
+
+
+def test_an_upper_case_sha_is_the_same_commit() -> None:
+    outcome = Setup().run(HEAD.upper())
+
+    assert outcome.decision is Decision.RELEASED
+    assert outcome.tag == "v1.1.0"
 
 
 def test_a_sha_of_sixty_four_hex_digits_is_a_commit_id() -> None:
