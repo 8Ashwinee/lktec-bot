@@ -416,6 +416,43 @@ def test_list_issue_comments_follows_the_pages(
     assert comments[101] == IssueComment(101, "", "", "", "")
     assert route.calls[0].request.url.params["per_page"] == "100"
     assert route.calls[0].request.url.params["page"] == "1"
+
+
+@respx.mock(base_url=BASE)
+def test_pagination_stops_on_an_endpoint_that_ignores_the_page(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter
+) -> None:
+    # The same full page on every request: the walk must not go on until the rate limit ends it.
+    same = [{"id": i, "user": None, "body": f"c{i}", "html_url": ""} for i in range(100)]
+    route = respx_mock.get("/repos/acme/widgets/issues/5/comments").respond(200, json=same)
+
+    with pytest.raises(GitHubHttpError, match="does not paginate"):
+        api.list_issue_comments("acme", "widgets", 5)
+
+    assert route.call_count == 2
+
+
+@respx.mock(base_url=BASE)
+def test_pagination_refuses_to_walk_past_the_page_ceiling(
+    api: HttpGitHubApi, respx_mock: respx.MockRouter
+) -> None:
+    def page(number: int) -> httpx.Response:
+        start = number * 100
+        return httpx.Response(
+            200,
+            json=[
+                {"id": i, "user": None, "body": "", "html_url": ""}
+                for i in range(start, start + 100)
+            ],
+        )
+
+    route = respx_mock.get("/repos/acme/widgets/issues/5/comments")
+    route.side_effect = lambda request: page(int(request.url.params["page"]))
+
+    with pytest.raises(GitHubHttpError, match="more than 100 pages"):
+        api.list_issue_comments("acme", "widgets", 5)
+
+    assert route.call_count == 100
     assert route.calls[1].request.url.params["page"] == "2"
 
 
