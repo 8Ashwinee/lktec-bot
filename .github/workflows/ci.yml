@@ -59,12 +59,6 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy src tests
-      - name: requirements.txt matches uv.lock
-        # The composite actions install from requirements.txt (pinned with hashes); it must be
-        # the export of the lock, regenerated with exactly this command after every lock change.
-        run: |
-          uv export --frozen --no-dev --group build --no-emit-project --hashes -o requirements.txt
-          git diff --exit-code -- requirements.txt
       - name: Workflow and action YAML parse strictly
         run: uv run python tools/check_yaml.py .github/workflows actions templates .github/lktec-bot.yml
       - name: Policy files validate against the module registry

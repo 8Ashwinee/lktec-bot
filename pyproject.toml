@@ -32,8 +32,8 @@ dev = [
     "types-PyYAML>=6.0",
 ]
 # The build backend, locked like everything else so that the composite actions can install
-# the package with ``pip install --no-build-isolation`` from ``requirements.txt`` (exported
-# from uv.lock with hashes) instead of fetching an unpinned hatchling at run time.
+# the package with ``uv pip install --no-build-isolation`` after exporting uv.lock with hashes
+# at run time, instead of fetching an unpinned hatchling.
 build = [
     "hatchling>=1.27",
     "hatch-vcs>=0.5",
