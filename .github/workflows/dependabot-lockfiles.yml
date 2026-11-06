@@ -1,8 +1,8 @@
 name: Dependabot lock files
 
 # lktec-bot uses its own lockfiles workflow (docs/modules/lockfiles.md). The pin below is a
-# commit of the pull request branch that introduced the workflow: after that pull request is
-# merged, move it to a commit of main.
+# commit of main; move it by hand when a change to the reusable workflow or to the modules
+# should take effect here (the bot is installed from the pinned commit).
 on:
   pull_request_target:
     types: [opened, synchronize, reopened]
@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   lockfiles:
-    uses: lukislp/lktec-bot/.github/workflows/lockfiles.yml@8bb277df02aae2fc28c50e9b1dbc6d9bb954a7ff # 2026-11-06
+    uses: lukislp/lktec-bot/.github/workflows/lockfiles.yml@7135078713cdb76a17fd9b204a39fdba17a346de # 2026-11-06
     with:
       uv-version: "0.12.24" # the pin of ci.yml
       python-version: "3.13"

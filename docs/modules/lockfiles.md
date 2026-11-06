@@ -205,5 +205,6 @@ regeneration really differs, so the version pin of the `uv` step matters.
 
 This repository uses the workflow itself
 ([`.github/workflows/dependabot-lockfiles.yml`](../../.github/workflows/dependabot-lockfiles.yml),
-uv only). While the module was developed on a branch the `uses:` line pinned a commit of that
-branch; after merging, move the pin to a commit of `main`.
+uv only). The `uses:` line pins a commit of `main`. Move it by hand when a change to the reusable
+workflow or to the modules should take effect here: the bot is installed from the pinned commit, so
+a stale pin fails on policy keys that commit does not know yet.
