@@ -58,7 +58,7 @@ def handover(root: Path, files: dict[str, bytes], manifest: list[str] | None = N
 
 
 def test_the_module_is_registered_with_its_verbs() -> None:
-    assert MODULES["sync"].verbs == {Verb.COMMIT, Verb.OPEN_ISSUE}
+    assert MODULES["sync"].verbs == {Verb.COMMIT, Verb.OPEN_ISSUE, Verb.CHECK}
     assert MODULES["sync"].options is SyncOptions
 
 
