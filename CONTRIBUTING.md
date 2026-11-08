@@ -9,7 +9,7 @@ The maintainer aims to answer new issues and pull requests within 14 days.
 1. Open an issue first for anything bigger than a typo, so the direction can be agreed before you spend time on it. A new verb starts with naming the one GitHub App permission it needs.
 2. Fork the repository (or branch, if you have write access) and make your change on a branch.
 3. Open a pull request against `main`.
-4. `main` is protected: a PR merges only after `lint` and `test` are green, the branch is up to date with `main`, and a code owner has approved. Nobody pushes to `main` directly, not even the maintainer. Commits must be signed.
+4. `main` is protected: a PR merges only after `lint` and `test` are green, the branch is up to date with `main`, and a code owner has approved. Nobody pushes to `main` directly, not even the maintainer. Commits on `main` carry verified signatures: sign yours if you can (SSH or GPG); an unsigned commit from a fork is squash-merged by the maintainer with a recorded bypass after the review, so a missing signature does not block a contribution.
 
 ## Your first pull request
 
@@ -18,16 +18,21 @@ The maintainer aims to answer new issues and pull requests within 14 days.
 3. **Check the baseline:** Run `uv run pytest` before making changes.
 4. **Make your change:** Follow the [architecture](docs/architecture.md) and [coding style](#coding-style) guidelines.
 5. **Run the checks:**
+
    ```sh
    uv run ruff check . && uv run ruff format --check .
    uv run mypy src tests tools
    uv run pytest
    ```
+
 6. **Commit:** Use a Conventional Commit message and sign off:
+
    ```sh
-   git commit -s -S -m "docs: describe your change"
+   git commit -s -m "docs: describe your change"
    ```
-   See [Developer Certificate of Origin](#developer-certificate-of-origin).
+
+   Cryptographic signing with `-S` is welcome if configured, but is not required from a fork. See [Developer Certificate of Origin](#developer-certificate-of-origin).
+
 7. **Open a pull request** against `main` and link the related issue.
 8. **Required checks:** `lint` and `test` must pass, the branch must be up to date, and a code owner must approve. See [What a pull request needs](#what-a-pull-request-needs).
 9. **Review:** The maintainer aims to respond to new pull requests within 14 days.
@@ -62,7 +67,7 @@ The required check `lint` runs ruff, ruff format, mypy, the YAML check and the h
 
 ## Developer Certificate of Origin
 
-By contributing you certify the [Developer Certificate of Origin 1.1](https://developercertificate.org/): you wrote the change, or otherwise have the right to submit it under the project's licence (Apache-2.0). Sign off every commit with `git commit -s`, which adds a `Signed-off-by: Your Name <email>` line. Dependency and bot pull requests are exempt. No check enforces the sign-off today; commits must additionally be cryptographically signed (see above).
+By contributing you certify the [Developer Certificate of Origin 1.1](https://developercertificate.org/): you wrote the change, or otherwise have the right to submit it under the project's licence (Apache-2.0). Sign off every commit with `git commit -s`, which adds a `Signed-off-by: Your Name <email>` line. Dependency and bot pull requests are exempt. No check enforces the sign-off today. Cryptographic signatures are welcome but not required from a fork (see above).
 
 ## Local setup
 

@@ -3,8 +3,11 @@
 [![CI](https://github.com/lukislp/lktec-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/lukislp/lktec-bot/actions/workflows/ci.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/lukislp/lktec-bot/badge)](https://scorecard.dev/viewer/?uri=github.com/lukislp/lktec-bot)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/16420/badge)](https://www.bestpractices.dev/projects/16420)
+[![CodeQL](https://github.com/lukislp/lktec-bot/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/lukislp/lktec-bot/security/code-scanning)
+[![Release](https://img.shields.io/github/v/release/lukislp/lktec-bot)](https://github.com/lukislp/lktec-bot/releases)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Python 3.13+](https://img.shields.io/badge/python-3.13%2B-blue)
+[![Built on GitHub Apps](https://img.shields.io/badge/built%20on-GitHub%20Apps-181717?logo=github)](https://docs.github.com/en/apps)
 
 GitHub App bot core: a small set of least-privilege verbs (comment, approve, enable auto-merge,
 update branch, later commits, releases, checks, issues and deployments) that run under a GitHub
@@ -52,7 +55,7 @@ modules:
 ```
 
 Each module may only run the verbs registered for it (`automerge`: approve, enable-automerge,
-update-branch, comment; `lockfiles`: commit, comment; `release`: release; `sync`: commit; `ping`: ping), and only the options it declares; anything else makes
+update-branch, comment; `lockfiles`: commit, comment; `release`: release; `sync`: commit, open-issue, check; `ping`: ping), and only the options it declares; anything else makes
 the file invalid and denies every verb.
 
 To run a verb against a real repository, register an App ([docs/register-your-app.md](docs/register-your-app.md)),
@@ -146,7 +149,8 @@ branch head and commits the ones that differ with the `commit` verb. Because the
 the protected branch without a pull request, the App must be a bypass actor (actor type
 Integration, mode always) of the branch ruleset. That is acceptable because GitHub signs the
 commit, the token is narrowed to one repository, the verb refuses `.github/workflows/`, and the
-module refuses any file outside the `paths` of the policy. Reusable workflows
+module refuses any file outside the `paths` of the policy. It can optionally report the bump as a
+check run on the release commit (policy option `check`, off by default). Reusable workflows
 ([`.github/workflows/deploy-bump.yml`](.github/workflows/deploy-bump.yml) and
 [`.github/workflows/sync.yml`](.github/workflows/sync.yml)) and caller template
 ([`templates/deploy-bump.yml`](templates/deploy-bump.yml)). The deploy bump can carry extra files, such as a coverage badge, into the same commit (input `handover-artifact`).
@@ -188,6 +192,3 @@ Apache-2.0, see [LICENSE](LICENSE).
 - [docs/roadmap.md](docs/roadmap.md): phases 0-4 and the next twelve months.
 - [docs/assurance-case.md](docs/assurance-case.md): threat model, trust boundaries, residual risks.
 - [docs/releases.md](docs/releases.md): signed release assets and reproducible builds.
-
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/lukislp/lktec-bot/badge)](https://scorecard.dev/viewer/?uri=github.com/lukislp/lktec-bot)
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/16420/badge)](https://www.bestpractices.dev/projects/16420)
